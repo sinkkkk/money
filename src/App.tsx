@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent, TouchEvent } from 'react'
 
 type TabId = 'personal' | 'business' | 'stats' | 'notes' | 'settings'
@@ -399,6 +399,7 @@ function App() {
 
   const touchStartRef = useRef<{ x: number; y: number } | null>(null)
   const longPressTimerRef = useRef<number | null>(null)
+  const amountInputRef = useRef<HTMLInputElement | null>(null)
 
   const personalMetrics = useMemo(() => buildDashboardMetrics(personal), [personal])
   const businessMetrics = useMemo(() => buildDashboardMetrics(business), [business])
@@ -759,6 +760,23 @@ function App() {
     })
     .join(' ')
 
+  useEffect(() => {
+    if (!showExpenseEditor) {
+      return
+    }
+
+    const timer = window.setTimeout(() => {
+      const input = amountInputRef.current
+      if (!input) {
+        return
+      }
+      input.focus()
+      input.select()
+    }, 40)
+
+    return () => window.clearTimeout(timer)
+  }, [showExpenseEditor, expenseEditId])
+
   return (
     <main className="app-shell">
       <header className="top-nav" role="tablist" aria-label="Account views">
@@ -955,8 +973,10 @@ function App() {
             <label>
               Amount
               <input
+                ref={amountInputRef}
                 type="text"
                 inputMode="decimal"
+                autoFocus
                 placeholder="45.00 or 45,00"
                 value={amountInput}
                 onChange={(event) => {
