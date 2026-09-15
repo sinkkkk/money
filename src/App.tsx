@@ -537,6 +537,7 @@ function App() {
   const longPressTimerRef = useRef<number | null>(null)
   const amountInputRef = useRef<HTMLInputElement | null>(null)
   const backupInputRef = useRef<HTMLInputElement | null>(null)
+  const categoryNameBeforeEditRef = useRef<Record<string, string>>({})
 
   const personalMonthOptions = useMemo(() => buildMonthOptions(personal.expenses), [personal.expenses])
   const businessMonthOptions = useMemo(() => buildMonthOptions(business.expenses), [business.expenses])
@@ -953,7 +954,7 @@ function App() {
           ? {
               ...category,
               ...patch,
-              name: patch.name?.trim() ? patch.name.trim() : category.name,
+              name: patch.name ?? category.name,
             }
           : category,
       ),
@@ -1336,7 +1337,22 @@ function App() {
                     <input
                       type="text"
                       value={category.name}
+                      onFocus={() => {
+                        categoryNameBeforeEditRef.current[`${settingsAccount}:${category.id}`] = category.name
+                      }}
                       onChange={(event) => updateCategory(settingsAccount, category.id, { name: event.target.value })}
+                      onBlur={(event) => {
+                        const trimmed = event.target.value.trim()
+                        const key = `${settingsAccount}:${category.id}`
+                        const fallback = categoryNameBeforeEditRef.current[key]?.trim() || category.name.trim() || 'Category'
+                        if (!trimmed) {
+                          updateCategory(settingsAccount, category.id, { name: fallback })
+                          return
+                        }
+                        if (trimmed !== event.target.value) {
+                          updateCategory(settingsAccount, category.id, { name: trimmed })
+                        }
+                      }}
                     />
                     <button type="button" className="danger-button" onClick={() => removeCategory(settingsAccount, category.id)}>
                       Remove
