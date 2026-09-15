@@ -57,7 +57,7 @@ body {
   top: max(8px, env(safe-area-inset-top, 0px));
   z-index: 10;
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
+  grid-template-columns: repeat(var(--tab-count), minmax(0, 1fr));
   gap: 6px;
   background: color-mix(in srgb, var(--surface-1) 88%, transparent);
   backdrop-filter: blur(8px);
@@ -402,6 +402,15 @@ h3 {
   display: flex;
   gap: 8px;
   flex-wrap: wrap;
+}
+
+.toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  margin-top: 10px;
+  color: var(--text-secondary);
 }
 
 .backup-actions {

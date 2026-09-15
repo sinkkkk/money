@@ -33,6 +33,8 @@ type DashboardMetrics = {
 type AppSettings = {
   currencySymbol: CurrencySymbol
   monthlyTargetCents: number | null
+  showBusiness: boolean
+  showNotes: boolean
 }
 
 type StatsDayPoint = {
@@ -76,7 +78,7 @@ const DEFAULT_CATEGORIES: CategoryItem[] = [
   { id: 'other', name: 'Other', color: '#8493ab' },
 ]
 
-const TABS: TabId[] = ['personal', 'business', 'stats', 'notes', 'settings']
+const ALL_TABS: TabId[] = ['personal', 'business', 'stats', 'notes', 'settings']
 
 const TAB_LABELS: Record<TabId, string> = {
   personal: 'Personal',
@@ -89,6 +91,8 @@ const TAB_LABELS: Record<TabId, string> = {
 const SETTINGS_DEFAULT: AppSettings = {
   currencySymbol: '€',
   monthlyTargetCents: null,
+  showBusiness: true,
+  showNotes: true,
 }
 
 const dateLabel = new Intl.DateTimeFormat('en-US', {
@@ -305,6 +309,8 @@ const ensureSettings = (): AppSettings => {
   const normalized: AppSettings = {
     currencySymbol,
     monthlyTargetCents,
+    showBusiness: settings.showBusiness !== false,
+    showNotes: settings.showNotes !== false,
   }
   save(STORAGE_KEYS.settings, normalized)
   return normalized
@@ -346,6 +352,38 @@ const buildMonthOptions = (expenses: Expense[]) => {
       value: key,
       label: monthSelectLabel.format(monthFromKey(key)),
     }))
+}
+
+const getVisibleTabsFromFlags = (showBusiness: boolean, showNotes: boolean): TabId[] => {
+  const tabs: TabId[] = ['personal']
+  if (showBusiness) {
+    tabs.push('business')
+  }
+  tabs.push('stats')
+  if (showNotes) {
+    tabs.push('notes')
+  }
+  tabs.push('settings')
+  return tabs
+}
+
+const findNearestVisibleTab = (tab: TabId, visibleTabs: TabId[]) => {
+  if (visibleTabs.includes(tab)) {
+    return tab
+  }
+
+  const hiddenIndex = ALL_TABS.indexOf(tab)
+  for (let offset = 1; offset < ALL_TABS.length; offset += 1) {
+    const left = ALL_TABS[hiddenIndex - offset]
+    if (left && visibleTabs.includes(left)) {
+      return left
+    }
+    const right = ALL_TABS[hiddenIndex + offset]
+    if (right && visibleTabs.includes(right)) {
+      return right
+    }
+  }
+  return visibleTabs[0] ?? 'personal'
 }
 
 const normalizeStoreFromUnknown = (raw: unknown, fallback: DashboardStore): DashboardStore => {
@@ -517,14 +555,21 @@ function App() {
     [business, businessSelectedMonth],
   )
   const statsSeries = useMemo(() => buildStatsSeries(personal.expenses), [personal.expenses])
+  const visibleTabs = useMemo<TabId[]>(
+    () => getVisibleTabsFromFlags(settings.showBusiness, settings.showNotes),
+    [settings.showBusiness, settings.showNotes],
+  )
+  const effectiveActiveTab = findNearestVisibleTab(activeTab, visibleTabs)
 
-  const activeTabIndex = Math.max(0, TABS.indexOf(activeTab))
-  const trackTranslatePercent = (activeTabIndex * 100) / TABS.length
-  const pageViewportStyle = { '--page-count': TABS.length } as CSSProperties
+  const activeTabIndex = visibleTabs.indexOf(effectiveActiveTab)
+  const safeActiveTabIndex = Math.max(0, activeTabIndex)
+  const trackTranslatePercent = (safeActiveTabIndex * 100) / visibleTabs.length
+  const pageViewportStyle = { '--page-count': visibleTabs.length } as CSSProperties
+  const tabNavStyle = { '--tab-count': visibleTabs.length } as CSSProperties
   const pageTrackStyle = { transform: `translate3d(-${trackTranslatePercent}%, 0, 0)` }
 
-  const activeDashboardStore = activeTab === 'business' ? business : personal
-  const activeDashboardStorageKey = activeTab === 'business' ? STORAGE_KEYS.business : STORAGE_KEYS.personal
+  const activeDashboardStore = effectiveActiveTab === 'business' ? business : personal
+  const activeDashboardStorageKey = effectiveActiveTab === 'business' ? STORAGE_KEYS.business : STORAGE_KEYS.personal
 
   const saveSettings = (next: Partial<AppSettings>) => {
     setSettings((prev) => {
@@ -532,6 +577,20 @@ function App() {
       save(STORAGE_KEYS.settings, merged)
       return merged
     })
+  }
+
+  const toggleBusinessVisibility = () => {
+    const nextShowBusiness = !settings.showBusiness
+    const nextVisible = getVisibleTabsFromFlags(nextShowBusiness, settings.showNotes)
+    setActiveTab((prev) => findNearestVisibleTab(prev, nextVisible))
+    saveSettings({ showBusiness: nextShowBusiness })
+  }
+
+  const toggleNotesVisibility = () => {
+    const nextShowNotes = !settings.showNotes
+    const nextVisible = getVisibleTabsFromFlags(settings.showBusiness, nextShowNotes)
+    setActiveTab((prev) => findNearestVisibleTab(prev, nextVisible))
+    saveSettings({ showNotes: nextShowNotes })
   }
 
   const currentMonthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
@@ -598,6 +657,8 @@ function App() {
           typeof data.settings?.monthlyTargetCents === 'number' && Number.isFinite(data.settings.monthlyTargetCents)
             ? Math.round(data.settings.monthlyTargetCents)
             : null,
+        showBusiness: data.settings?.showBusiness !== false,
+        showNotes: data.settings?.showNotes !== false,
       }
       const prepared: BackupPayload = {
         schemaVersion: BACKUP_SCHEMA_VERSION,
@@ -639,6 +700,7 @@ function App() {
     setNotes(next.notes)
     setSettings(next.settings)
     setSelectedMonthByAccount(next.selectedMonthByAccount)
+    setActiveTab((prev) => findNearestVisibleTab(prev, getVisibleTabsFromFlags(next.settings.showBusiness, next.settings.showNotes)))
     setTargetInput(next.settings.monthlyTargetCents ? (next.settings.monthlyTargetCents / 100).toFixed(2) : '')
     save(STORAGE_KEYS.personal, next.personal)
     save(STORAGE_KEYS.business, next.business)
@@ -675,7 +737,7 @@ function App() {
   }
 
   const openAddExpense = () => {
-    if (activeTab !== 'personal' && activeTab !== 'business') {
+    if (effectiveActiveTab !== 'personal' && effectiveActiveTab !== 'business') {
       return
     }
 
@@ -700,7 +762,7 @@ function App() {
 
   const submitExpense = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (activeTab !== 'personal' && activeTab !== 'business') {
+    if (effectiveActiveTab !== 'personal' && effectiveActiveTab !== 'business') {
       return
     }
 
@@ -715,7 +777,7 @@ function App() {
       : activeDashboardStore.categories[0]?.id ?? 'other'
 
     const nextExpense: Expense = {
-      id: expenseEditId ?? `${activeTab}-${Date.now()}`,
+      id: expenseEditId ?? `${effectiveActiveTab}-${Date.now()}`,
       amountCents,
       categoryId: validCategoryId,
       note: expenseNoteInput.trim() || 'Expense',
@@ -731,7 +793,7 @@ function App() {
         : [nextExpense, ...activeDashboardStore.expenses],
     }
 
-    if (activeTab === 'personal') {
+    if (effectiveActiveTab === 'personal') {
       setPersonal(nextStore)
     } else {
       setBusiness(nextStore)
@@ -747,7 +809,7 @@ function App() {
   }
 
   const deleteExpense = (expenseId: string) => {
-    if (activeTab !== 'personal' && activeTab !== 'business') {
+    if (effectiveActiveTab !== 'personal' && effectiveActiveTab !== 'business') {
       return
     }
 
@@ -756,7 +818,7 @@ function App() {
       expenses: activeDashboardStore.expenses.filter((expense) => expense.id !== expenseId),
     }
 
-    if (activeTab === 'personal') {
+    if (effectiveActiveTab === 'personal') {
       setPersonal(nextStore)
     } else {
       setBusiness(nextStore)
@@ -853,12 +915,12 @@ function App() {
       return
     }
 
-    if (deltaX < 0 && activeTabIndex < TABS.length - 1) {
-      switchTab(TABS[activeTabIndex + 1])
+    if (deltaX < 0 && safeActiveTabIndex < visibleTabs.length - 1) {
+      switchTab(visibleTabs[safeActiveTabIndex + 1])
     }
 
-    if (deltaX > 0 && activeTabIndex > 0) {
-      switchTab(TABS[activeTabIndex - 1])
+    if (deltaX > 0 && safeActiveTabIndex > 0) {
+      switchTab(visibleTabs[safeActiveTabIndex - 1])
     }
   }
 
@@ -1035,14 +1097,14 @@ function App() {
 
   return (
     <main className="app-shell">
-      <header className="top-nav" role="tablist" aria-label="Account views">
-        {TABS.map((tab) => (
+      <header className="top-nav" role="tablist" aria-label="Account views" style={tabNavStyle}>
+        {visibleTabs.map((tab) => (
           <button
             key={tab}
-            className={activeTab === tab ? 'tab active' : 'tab'}
+            className={effectiveActiveTab === tab ? 'tab active' : 'tab'}
             onClick={() => switchTab(tab)}
             role="tab"
-            aria-selected={activeTab === tab}
+            aria-selected={effectiveActiveTab === tab}
           >
             {TAB_LABELS[tab]}
           </button>
@@ -1052,7 +1114,9 @@ function App() {
       <div className="page-viewport" style={pageViewportStyle} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
         <div className="page-track" style={pageTrackStyle}>
           {renderDashboardPage('personal', 'Personal Dashboard', personal, personalMetrics, personalMonthOptions)}
-          {renderDashboardPage('business', 'Business Dashboard', business, businessMetrics, businessMonthOptions)}
+          {settings.showBusiness
+            ? renderDashboardPage('business', 'Business Dashboard', business, businessMetrics, businessMonthOptions)
+            : null}
 
           <section className="stats-page page">
             <h1>Personal Stats</h1>
@@ -1166,42 +1230,68 @@ function App() {
             </section>
           </section>
 
-          <section className="notes-page page">
-            <h1>Money Notes</h1>
-            <p className="subtitle">Tap and hold a note for edit/delete actions.</p>
-            <form className="note-form" onSubmit={addNote}>
-              <textarea
-                value={moneyNoteInput}
-                onChange={(event) => setMoneyNoteInput(event.target.value)}
-                placeholder="Write a quick note..."
-                rows={4}
-              />
-              <button type="submit">Save Note</button>
-            </form>
-            <ul className="notes-list">
-              {notes.length === 0 ? (
-                <li className="empty">No notes yet. Add one above.</li>
-              ) : (
-                notes.map((note, index) => (
-                  <li
-                    key={`${note}-${index}`}
-                    onTouchStart={() => startLongPress(() => setNoteActionIndex(index))}
-                    onTouchEnd={clearLongPress}
-                    onTouchCancel={clearLongPress}
-                    onMouseDown={() => startLongPress(() => setNoteActionIndex(index))}
-                    onMouseUp={clearLongPress}
-                    onMouseLeave={clearLongPress}
-                  >
-                    {note}
-                  </li>
-                ))
-              )}
-            </ul>
-          </section>
+          {settings.showNotes ? (
+            <section className="notes-page page">
+              <h1>Money Notes</h1>
+              <p className="subtitle">Tap and hold a note for edit/delete actions.</p>
+              <form className="note-form" onSubmit={addNote}>
+                <textarea
+                  value={moneyNoteInput}
+                  onChange={(event) => setMoneyNoteInput(event.target.value)}
+                  placeholder="Write a quick note..."
+                  rows={4}
+                />
+                <button type="submit">Save Note</button>
+              </form>
+              <ul className="notes-list">
+                {notes.length === 0 ? (
+                  <li className="empty">No notes yet. Add one above.</li>
+                ) : (
+                  notes.map((note, index) => (
+                    <li
+                      key={`${note}-${index}`}
+                      onTouchStart={() => startLongPress(() => setNoteActionIndex(index))}
+                      onTouchEnd={clearLongPress}
+                      onTouchCancel={clearLongPress}
+                      onMouseDown={() => startLongPress(() => setNoteActionIndex(index))}
+                      onMouseUp={clearLongPress}
+                      onMouseLeave={clearLongPress}
+                    >
+                      {note}
+                    </li>
+                  ))
+                )}
+              </ul>
+            </section>
+          ) : null}
 
           <section className="settings-page page">
             <h1>Settings</h1>
             <p className="subtitle">Customize categories and currency preferences.</p>
+
+            <section className="settings-card">
+              <h2>Visible Tabs</h2>
+              <div className="toggle-row">
+                <span>Show Business</span>
+                <button
+                  type="button"
+                  className={settings.showBusiness ? 'chip active' : 'chip'}
+                  onClick={toggleBusinessVisibility}
+                >
+                  {settings.showBusiness ? 'ON' : 'OFF'}
+                </button>
+              </div>
+              <div className="toggle-row">
+                <span>Show Notes</span>
+                <button
+                  type="button"
+                  className={settings.showNotes ? 'chip active' : 'chip'}
+                  onClick={toggleNotesVisibility}
+                >
+                  {settings.showNotes ? 'ON' : 'OFF'}
+                </button>
+              </div>
+            </section>
 
             <section className="settings-card">
               <h2>Currency Symbol</h2>
@@ -1298,7 +1388,7 @@ function App() {
         </div>
       </div>
 
-      {(activeTab === 'personal' || activeTab === 'business') && !showExpenseEditor ? (
+      {(effectiveActiveTab === 'personal' || effectiveActiveTab === 'business') && !showExpenseEditor ? (
         <button className="fab" onClick={openAddExpense} aria-label="Add expense">
           +
         </button>
