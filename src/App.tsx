@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
-import type { CSSProperties, FormEvent, TouchEvent } from 'react'
+import type { CSSProperties, ChangeEvent, FormEvent, TouchEvent } from 'react'
 
 type TabId = 'personal' | 'business' | 'stats' | 'notes' | 'settings'
 type AccountKind = 'personal' | 'business'
@@ -32,6 +32,7 @@ type DashboardMetrics = {
 
 type AppSettings = {
   currencySymbol: CurrencySymbol
+  monthlyTargetCents: number | null
 }
 
 type StatsDayPoint = {
@@ -45,12 +46,26 @@ type StatsMonthPoint = {
   monthKey: string
 }
 
+type BackupPayload = {
+  schemaVersion: 1
+  exportedAt: string
+  data: {
+    personal: DashboardStore
+    business: DashboardStore
+    notes: string[]
+    settings: AppSettings
+    selectedMonthByAccount: Record<AccountKind, string>
+  }
+}
+
 const STORAGE_KEYS = {
   personal: 'money.pwa.personal.v2',
   business: 'money.pwa.business.v2',
   notes: 'money.pwa.notes.v1',
   settings: 'money.pwa.settings.v1',
 } as const
+
+const BACKUP_SCHEMA_VERSION = 1
 
 const DEFAULT_CATEGORIES: CategoryItem[] = [
   { id: 'food', name: 'Food', color: '#58c7b3' },
@@ -73,6 +88,7 @@ const TAB_LABELS: Record<TabId, string> = {
 
 const SETTINGS_DEFAULT: AppSettings = {
   currencySymbol: '€',
+  monthlyTargetCents: null,
 }
 
 const dateLabel = new Intl.DateTimeFormat('en-US', {
@@ -274,12 +290,24 @@ const ensureStore = (key: string, fallback: DashboardStore) => {
 }
 
 const ensureSettings = (): AppSettings => {
-  const settings = safeRead<AppSettings | null>(STORAGE_KEYS.settings, null)
-  if (!settings || (settings.currencySymbol !== '€' && settings.currencySymbol !== '$')) {
+  const settings = safeRead<Partial<AppSettings> | null>(STORAGE_KEYS.settings, null)
+  if (!settings) {
     save(STORAGE_KEYS.settings, SETTINGS_DEFAULT)
     return SETTINGS_DEFAULT
   }
-  return settings
+
+  const currencySymbol = settings.currencySymbol === '$' ? '$' : '€'
+  const monthlyTargetCents =
+    typeof settings.monthlyTargetCents === 'number' && Number.isFinite(settings.monthlyTargetCents)
+      ? Math.round(settings.monthlyTargetCents)
+      : null
+
+  const normalized: AppSettings = {
+    currencySymbol,
+    monthlyTargetCents,
+  }
+  save(STORAGE_KEYS.settings, normalized)
+  return normalized
 }
 
 const buildDashboardMetrics = (store: DashboardStore, selectedMonth: string): DashboardMetrics => {
@@ -318,6 +346,38 @@ const buildMonthOptions = (expenses: Expense[]) => {
       value: key,
       label: monthSelectLabel.format(monthFromKey(key)),
     }))
+}
+
+const normalizeStoreFromUnknown = (raw: unknown, fallback: DashboardStore): DashboardStore => {
+  if (!raw || typeof raw !== 'object') {
+    return fallback
+  }
+
+  const candidate = raw as Record<string, unknown>
+  const categories = normalizeCategories(candidate.categories)
+  const fallbackCategoryId = categories.find((category) => category.id === 'other')?.id ?? categories[0].id
+  const expensesSource = Array.isArray(candidate.expenses) ? candidate.expenses : []
+
+  const expenses: Expense[] = expensesSource
+    .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object')
+    .map((expense) => {
+      const categoryRaw = typeof expense.categoryId === 'string' ? expense.categoryId.trim().toLowerCase() : fallbackCategoryId
+      const categoryId = categories.some((category) => category.id === categoryRaw) ? categoryRaw : fallbackCategoryId
+      const amountCents = typeof expense.amountCents === 'number' ? Math.round(expense.amountCents) : 0
+      return {
+        id: typeof expense.id === 'string' ? expense.id : `expense-${Date.now()}-${Math.random()}`,
+        amountCents: Number.isFinite(amountCents) ? Math.max(0, amountCents) : 0,
+        categoryId,
+        note: typeof expense.note === 'string' && expense.note.trim() ? expense.note.trim() : 'Expense',
+        createdAt: typeof expense.createdAt === 'string' ? expense.createdAt : new Date().toISOString(),
+      }
+    })
+    .filter((expense) => expense.amountCents > 0)
+
+  return {
+    categories,
+    expenses,
+  }
 }
 
 const donutBackground = (categories: CategoryItem[], totals: Record<string, number>) => {
@@ -423,6 +483,13 @@ function App() {
   const [newCategoryName, setNewCategoryName] = useState('')
   const [newCategoryColor, setNewCategoryColor] = useState('#6a87ff')
   const [confirmClearOpen, setConfirmClearOpen] = useState(false)
+  const [showImportConfirm, setShowImportConfirm] = useState(false)
+  const [backupMessage, setBackupMessage] = useState('')
+  const [pendingBackupImport, setPendingBackupImport] = useState<BackupPayload | null>(null)
+  const [targetInput, setTargetInput] = useState(() => {
+    const initialSettings = ensureSettings()
+    return initialSettings.monthlyTargetCents ? (initialSettings.monthlyTargetCents / 100).toFixed(2) : ''
+  })
   const [selectedMonthByAccount, setSelectedMonthByAccount] = useState<Record<AccountKind, string>>({
     personal: monthKey(new Date()),
     business: monthKey(new Date()),
@@ -431,16 +498,23 @@ function App() {
   const touchStartRef = useRef<{ x: number; y: number } | null>(null)
   const longPressTimerRef = useRef<number | null>(null)
   const amountInputRef = useRef<HTMLInputElement | null>(null)
+  const backupInputRef = useRef<HTMLInputElement | null>(null)
 
   const personalMonthOptions = useMemo(() => buildMonthOptions(personal.expenses), [personal.expenses])
   const businessMonthOptions = useMemo(() => buildMonthOptions(business.expenses), [business.expenses])
+  const personalSelectedMonth = personalMonthOptions.some((option) => option.value === selectedMonthByAccount.personal)
+    ? selectedMonthByAccount.personal
+    : (personalMonthOptions[0]?.value ?? monthKey(new Date()))
+  const businessSelectedMonth = businessMonthOptions.some((option) => option.value === selectedMonthByAccount.business)
+    ? selectedMonthByAccount.business
+    : (businessMonthOptions[0]?.value ?? monthKey(new Date()))
   const personalMetrics = useMemo(
-    () => buildDashboardMetrics(personal, selectedMonthByAccount.personal),
-    [personal, selectedMonthByAccount.personal],
+    () => buildDashboardMetrics(personal, personalSelectedMonth),
+    [personal, personalSelectedMonth],
   )
   const businessMetrics = useMemo(
-    () => buildDashboardMetrics(business, selectedMonthByAccount.business),
-    [business, selectedMonthByAccount.business],
+    () => buildDashboardMetrics(business, businessSelectedMonth),
+    [business, businessSelectedMonth],
   )
   const statsSeries = useMemo(() => buildStatsSeries(personal.expenses), [personal.expenses])
 
@@ -452,9 +526,127 @@ function App() {
   const activeDashboardStore = activeTab === 'business' ? business : personal
   const activeDashboardStorageKey = activeTab === 'business' ? STORAGE_KEYS.business : STORAGE_KEYS.personal
 
-  const saveSettings = (next: AppSettings) => {
-    setSettings(next)
-    save(STORAGE_KEYS.settings, next)
+  const saveSettings = (next: Partial<AppSettings>) => {
+    setSettings((prev) => {
+      const merged = { ...prev, ...next }
+      save(STORAGE_KEYS.settings, merged)
+      return merged
+    })
+  }
+
+  const currentMonthStart = new Date(new Date().getFullYear(), new Date().getMonth(), 1)
+  const currentMonthKey = monthKey(currentMonthStart)
+  const currentMonthSpend = personal.expenses.reduce((sum, expense) => {
+    if (monthKey(new Date(expense.createdAt)) !== currentMonthKey) {
+      return sum
+    }
+    return sum + expense.amountCents
+  }, 0)
+  const daysInCurrentMonth = new Date(currentMonthStart.getFullYear(), currentMonthStart.getMonth() + 1, 0).getDate()
+  const remainingDays = Math.max(daysInCurrentMonth - new Date().getDate() + 1, 1)
+  const targetCents = settings.monthlyTargetCents
+  const remainingBudgetCents = targetCents === null ? null : targetCents - currentMonthSpend
+  const dailyAllowanceCents =
+    remainingBudgetCents === null ? null : Math.trunc(remainingBudgetCents / Math.max(remainingDays, 1))
+
+  const exportBackup = () => {
+    const payload: BackupPayload = {
+      schemaVersion: BACKUP_SCHEMA_VERSION,
+      exportedAt: new Date().toISOString(),
+      data: {
+        personal,
+        business,
+        notes,
+        settings,
+        selectedMonthByAccount: {
+          personal: personalSelectedMonth,
+          business: businessSelectedMonth,
+        },
+      },
+    }
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: 'application/json' })
+    const url = URL.createObjectURL(blob)
+    const anchor = document.createElement('a')
+    const stamp = new Date().toISOString().slice(0, 10)
+    anchor.href = url
+    anchor.download = `money-dash-backup-${stamp}.json`
+    anchor.click()
+    URL.revokeObjectURL(url)
+    setBackupMessage('Backup file exported. Save it to Files or iCloud Drive.')
+  }
+
+  const requestImportBackup = () => {
+    backupInputRef.current?.click()
+  }
+
+  const onBackupFileSelected = async (event: ChangeEvent<HTMLInputElement>) => {
+    const file = event.target.files?.[0]
+    if (!file) {
+      return
+    }
+    try {
+      const text = await file.text()
+      const parsed = JSON.parse(text) as Partial<BackupPayload>
+      if (parsed.schemaVersion !== BACKUP_SCHEMA_VERSION || !parsed.data) {
+        setBackupMessage('Unsupported backup format. Use a Money Dash backup file.')
+        return
+      }
+      const data = parsed.data as BackupPayload['data']
+      const normalizedSettings: AppSettings = {
+        currencySymbol: data.settings?.currencySymbol === '$' ? '$' : '€',
+        monthlyTargetCents:
+          typeof data.settings?.monthlyTargetCents === 'number' && Number.isFinite(data.settings.monthlyTargetCents)
+            ? Math.round(data.settings.monthlyTargetCents)
+            : null,
+      }
+      const prepared: BackupPayload = {
+        schemaVersion: BACKUP_SCHEMA_VERSION,
+        exportedAt: parsed.exportedAt ?? new Date().toISOString(),
+        data: {
+          personal: normalizeStoreFromUnknown(data.personal, seedData('personal')),
+          business: normalizeStoreFromUnknown(data.business, seedData('business')),
+          notes: Array.isArray(data.notes) ? data.notes.filter((note) => typeof note === 'string') : [],
+          settings: normalizedSettings,
+          selectedMonthByAccount: {
+            personal:
+              typeof data.selectedMonthByAccount?.personal === 'string'
+                ? data.selectedMonthByAccount.personal
+                : monthKey(new Date()),
+            business:
+              typeof data.selectedMonthByAccount?.business === 'string'
+                ? data.selectedMonthByAccount.business
+                : monthKey(new Date()),
+          },
+        },
+      }
+      setPendingBackupImport(prepared)
+      setShowImportConfirm(true)
+      setBackupMessage('Backup loaded. Confirm import to overwrite current app data.')
+    } catch {
+      setBackupMessage('Could not read that file. Please select a valid backup JSON.')
+    } finally {
+      event.target.value = ''
+    }
+  }
+
+  const confirmImportBackup = () => {
+    if (!pendingBackupImport) {
+      return
+    }
+    const next = pendingBackupImport.data
+    setPersonal(next.personal)
+    setBusiness(next.business)
+    setNotes(next.notes)
+    setSettings(next.settings)
+    setSelectedMonthByAccount(next.selectedMonthByAccount)
+    setTargetInput(next.settings.monthlyTargetCents ? (next.settings.monthlyTargetCents / 100).toFixed(2) : '')
+    save(STORAGE_KEYS.personal, next.personal)
+    save(STORAGE_KEYS.business, next.business)
+    save(STORAGE_KEYS.notes, next.notes)
+    save(STORAGE_KEYS.settings, next.settings)
+    setPendingBackupImport(null)
+    setShowImportConfirm(false)
+    setBackupMessage('Backup imported successfully.')
   }
 
   const updateAccountStore = (account: AccountKind, updater: (store: DashboardStore) => DashboardStore) => {
@@ -742,24 +934,6 @@ function App() {
     <section className="dashboard page" key={account}>
       <h1>{title}</h1>
       <p className="subtitle">Track month-to-date spending by category.</p>
-      <label className="month-picker">
-        <span>Month</span>
-        <select
-          value={selectedMonthByAccount[account]}
-          onChange={(event) =>
-            setSelectedMonthByAccount((prev) => ({
-              ...prev,
-              [account]: event.target.value,
-            }))
-          }
-        >
-          {monthOptions.map((option) => (
-            <option key={option.value} value={option.value}>
-              {option.label}
-            </option>
-          ))}
-        </select>
-      </label>
 
       <div className="donut-wrap">
         <div className="donut" style={{ background: donutBackground(store.categories, metrics.totalsByCategory) }} aria-label="Category spending chart">
@@ -810,6 +984,25 @@ function App() {
           </ul>
         )}
       </section>
+
+      <label className="month-picker month-picker-bottom">
+        <span>Viewing Month</span>
+        <select
+          value={account === 'personal' ? personalSelectedMonth : businessSelectedMonth}
+          onChange={(event) =>
+            setSelectedMonthByAccount((prev) => ({
+              ...prev,
+              [account]: event.target.value,
+            }))
+          }
+        >
+          {monthOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
     </section>
   )
 
@@ -866,6 +1059,65 @@ function App() {
             <p className="subtitle">
               {summarizeComparison(statsSeries.todaySpend, statsSeries.yesterdaySpend, settings.currencySymbol, 'today compared to yesterday')}
             </p>
+
+            <section className="settings-card chart-card">
+              <h2>Current Month Target</h2>
+              <form
+                className="inline-form"
+                onSubmit={(event) => {
+                  event.preventDefault()
+                  if (!targetInput.trim()) {
+                    saveSettings({ monthlyTargetCents: null })
+                    setTargetInput('')
+                    setBackupMessage('')
+                    return
+                  }
+                  const parsed = parseCurrencyInputToCents(targetInput)
+                  if (!parsed) {
+                    setBackupMessage('Enter a valid target amount, like 1500.00 or 1500,00.')
+                    return
+                  }
+                  saveSettings({ monthlyTargetCents: parsed })
+                  setTargetInput((parsed / 100).toFixed(2))
+                  setBackupMessage('')
+                }}
+              >
+                <input
+                  type="text"
+                  inputMode="decimal"
+                  placeholder={`${settings.currencySymbol}1200.00`}
+                  value={targetInput}
+                  onChange={(event) => setTargetInput(event.target.value)}
+                />
+                <button type="submit">Save Target</button>
+              </form>
+              {targetCents === null ? (
+                <p className="empty">No target set for this month.</p>
+              ) : (
+                <div className="target-grid">
+                  <p>
+                    <span>Target</span>
+                    <strong>{formatCents(targetCents, settings.currencySymbol)}</strong>
+                  </p>
+                  <p>
+                    <span>Spent</span>
+                    <strong>{formatCents(currentMonthSpend, settings.currencySymbol)}</strong>
+                  </p>
+                  <p>
+                    <span>Remaining</span>
+                    <strong className={remainingBudgetCents !== null && remainingBudgetCents < 0 ? 'expense-outflow' : ''}>
+                      {formatCents(remainingBudgetCents ?? 0, settings.currencySymbol)}
+                    </strong>
+                  </p>
+                  <p>
+                    <span>Per-day allowance</span>
+                    <strong className={dailyAllowanceCents !== null && dailyAllowanceCents < 0 ? 'expense-outflow' : ''}>
+                      {formatCents(dailyAllowanceCents ?? 0, settings.currencySymbol)}
+                    </strong>
+                  </p>
+                </div>
+              )}
+            </section>
 
             <section className="settings-card chart-card">
               <h2>Daily Spending (7 days)</h2>
@@ -1027,6 +1279,21 @@ function App() {
                 Clear all data
               </button>
             </section>
+
+            <section className="settings-card">
+              <h2>Backup & Restore</h2>
+              <p className="subtitle">Export a backup file to iCloud Drive and import it later to restore everything.</p>
+              <div className="backup-actions">
+                <button type="button" className="chip active" onClick={exportBackup}>
+                  Export backup file
+                </button>
+                <button type="button" className="chip" onClick={requestImportBackup}>
+                  Import backup file
+                </button>
+              </div>
+              {backupMessage ? <p className="backup-message">{backupMessage}</p> : null}
+              <input ref={backupInputRef} type="file" accept="application/json" onChange={onBackupFileSelected} hidden />
+            </section>
           </section>
         </div>
       </div>
@@ -1152,6 +1419,33 @@ function App() {
               Yes, clear spending data
             </button>
             <button type="button" onClick={() => setConfirmClearOpen(false)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {showImportConfirm && pendingBackupImport ? (
+        <div
+          className="action-sheet-backdrop"
+          onClick={() => {
+            setShowImportConfirm(false)
+            setPendingBackupImport(null)
+          }}
+        >
+          <div className="action-sheet" onClick={(event) => event.stopPropagation()}>
+            <h3>Import backup and overwrite data?</h3>
+            <p className="subtitle">This replaces existing Personal, Business, Notes, Settings, and month selections.</p>
+            <button type="button" className="danger-button" onClick={confirmImportBackup}>
+              Yes, import backup
+            </button>
+            <button
+              type="button"
+              onClick={() => {
+                setShowImportConfirm(false)
+                setPendingBackupImport(null)
+              }}
+            >
               Cancel
             </button>
           </div>

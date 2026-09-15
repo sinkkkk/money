@@ -116,6 +116,10 @@ h3 {
   font-size: 0.82rem;
 }
 
+.month-picker-bottom {
+  margin-top: 14px;
+}
+
 .month-picker select {
   background: var(--surface-2);
   color: #ebf0f8;
@@ -123,6 +127,32 @@ h3 {
   border-radius: 10px;
   padding: 9px 12px;
   font-size: 0.9rem;
+}
+
+.target-grid {
+  margin-top: 12px;
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.target-grid p {
+  margin: 0;
+  padding: 10px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: #131a28;
+  display: grid;
+  gap: 6px;
+}
+
+.target-grid span {
+  color: var(--text-secondary);
+  font-size: 0.75rem;
+}
+
+.target-grid strong {
+  color: var(--text-primary);
 }
 
 .page-viewport {
@@ -363,6 +393,19 @@ h3 {
   flex-wrap: wrap;
 }
 
+.backup-actions {
+  margin-top: 10px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+}
+
+.backup-message {
+  margin: 10px 0 0;
+  color: var(--text-secondary);
+  font-size: 0.82rem;
+}
+
 .chip {
   background: var(--surface-2);
   color: var(--text-secondary);
@@ -523,5 +566,9 @@ input[type='color'] {
   .inline-form input[type='color'] {
     width: 100%;
     height: 44px;
+  }
+
+  .target-grid {
+    grid-template-columns: 1fr;
   }
 }
