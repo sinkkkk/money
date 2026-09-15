@@ -16,6 +16,12 @@ type DashboardStore = {
   expenses: Expense[]
 }
 
+type DashboardMetrics = {
+  totalsByCategory: Record<Category, number>
+  monthlyTotalCents: number
+  recentTransactions: Expense[]
+}
+
 const STORAGE_KEYS = {
   personal: 'money.pwa.personal.v1',
   business: 'money.pwa.business.v1',
@@ -24,6 +30,13 @@ const STORAGE_KEYS = {
 
 const CATEGORIES: Category[] = ['Food', 'Transport', 'Shopping', 'Bills', 'Health', 'Other']
 const TABS: TabId[] = ['personal', 'business', 'notes']
+
+const TAB_LABELS: Record<TabId, string> = {
+  personal: 'Personal',
+  business: 'Business',
+  notes: 'Notes',
+}
+
 const CATEGORY_COLORS: Record<Category, string> = {
   Food: '#34d399',
   Transport: '#60a5fa',
@@ -80,6 +93,7 @@ const parseCurrencyInputToCents = (value: string): number | null => {
 
   const [whole, fractional = ''] = normalized.split('.')
   const cents = Number(whole) * 100 + Number((fractional + '00').slice(0, 2))
+
   if (!Number.isFinite(cents) || cents <= 0) {
     return null
   }
@@ -127,6 +141,7 @@ const ensureStore = (key: string, fallback: DashboardStore) => {
     save(key, fallback)
     return fallback
   }
+
   const normalized: DashboardStore = {
     expenses: existing.expenses.map((expense) => {
       if (typeof expense.amountCents === 'number') {
@@ -140,8 +155,29 @@ const ensureStore = (key: string, fallback: DashboardStore) => {
       }
     }),
   }
+
   save(key, normalized)
   return normalized
+}
+
+const buildDashboardMetrics = (store: DashboardStore): DashboardMetrics => {
+  const totalsByCategory = Object.fromEntries(CATEGORIES.map((category) => [category, 0])) as Record<Category, number>
+  const thisMonth = monthKey()
+
+  for (const expense of store.expenses) {
+    if (monthKey(new Date(expense.createdAt)) === thisMonth) {
+      totalsByCategory[expense.category] += expense.amountCents
+    }
+  }
+
+  const monthlyTotalCents = Object.values(totalsByCategory).reduce((sum, value) => sum + value, 0)
+  const recentTransactions = [...store.expenses].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt))
+
+  return {
+    totalsByCategory,
+    monthlyTotalCents,
+    recentTransactions,
+  }
 }
 
 const donutBackground = (totals: Record<Category, number>) => {
@@ -176,35 +212,30 @@ function App() {
   const [amountInput, setAmountInput] = useState('')
   const [amountError, setAmountError] = useState('')
   const [categoryInput, setCategoryInput] = useState<Category>('Food')
-  const [noteInput, setNoteInput] = useState('')
+  const [expenseNoteInput, setExpenseNoteInput] = useState('')
+  const [moneyNoteInput, setMoneyNoteInput] = useState('')
+
   const touchStartRef = useRef<{ x: number; y: number } | null>(null)
 
-  const activeStore = activeTab === 'personal' ? personal : business
-  const setActiveStore = activeTab === 'personal' ? setPersonal : setBusiness
-  const activeStorageKey = activeTab === 'personal' ? STORAGE_KEYS.personal : STORAGE_KEYS.business
+  const personalMetrics = useMemo(() => buildDashboardMetrics(personal), [personal])
+  const businessMetrics = useMemo(() => buildDashboardMetrics(business), [business])
 
-  const monthTotals = useMemo(() => {
-    const baseline = Object.fromEntries(CATEGORIES.map((category) => [category, 0])) as Record<Category, number>
-    const thisMonth = monthKey()
+  const activeDashboardStorageKey = activeTab === 'personal' ? STORAGE_KEYS.personal : STORAGE_KEYS.business
+  const activeDashboardStore = activeTab === 'personal' ? personal : business
+  const setActiveDashboardStore = activeTab === 'personal' ? setPersonal : setBusiness
+  const activeTabIndex = TABS.indexOf(activeTab)
 
-    for (const expense of activeStore.expenses) {
-      if (monthKey(new Date(expense.createdAt)) === thisMonth) {
-        baseline[expense.category] += expense.amountCents
-      }
-    }
-
-    return baseline
-  }, [activeStore.expenses])
-
-  const monthlyTotal = Object.values(monthTotals).reduce((sum, value) => sum + value, 0)
-
-  const recentTransactions = useMemo(
-    () => [...activeStore.expenses].sort((a, b) => Date.parse(b.createdAt) - Date.parse(a.createdAt)),
-    [activeStore.expenses],
-  )
+  const switchTab = (tab: TabId) => {
+    setShowAdd(false)
+    setActiveTab(tab)
+  }
 
   const addExpense = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
+    if (activeTab === 'notes') {
+      return
+    }
+
     const amountCents = parseCurrencyInputToCents(amountInput)
     if (!amountCents) {
       setAmountError('Enter a valid amount, like 3.99 or 3,99.')
@@ -215,22 +246,35 @@ function App() {
       id: `${activeTab}-${Date.now()}`,
       amountCents,
       category: categoryInput,
-      note: noteInput.trim() || 'Expense',
+      note: expenseNoteInput.trim() || 'Expense',
       createdAt: new Date().toISOString(),
     }
 
     const nextStore = {
-      expenses: [nextExpense, ...activeStore.expenses],
+      expenses: [nextExpense, ...activeDashboardStore.expenses],
     }
 
-    setActiveStore(nextStore)
-    save(activeStorageKey, nextStore)
+    setActiveDashboardStore(nextStore)
+    save(activeDashboardStorageKey, nextStore)
 
     setAmountInput('')
     setAmountError('')
     setCategoryInput('Food')
-    setNoteInput('')
+    setExpenseNoteInput('')
     setShowAdd(false)
+  }
+
+  const addNote = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (!moneyNoteInput.trim()) {
+      return
+    }
+
+    const next = [moneyNoteInput.trim(), ...notes].slice(0, 80)
+
+    setNotes(next)
+    save(STORAGE_KEYS.notes, next)
+    setMoneyNoteInput('')
   }
 
   const onTouchStart = (event: TouchEvent<HTMLElement>) => {
@@ -248,6 +292,7 @@ function App() {
     if (showAdd || !touchStartRef.current) {
       return
     }
+
     const touch = event.changedTouches[0]
     const deltaX = touch.clientX - touchStartRef.current.x
     const deltaY = touch.clientY - touchStartRef.current.y
@@ -257,177 +302,155 @@ function App() {
       return
     }
 
-    const currentIndex = TABS.indexOf(activeTab)
-    if (deltaX < 0 && currentIndex < TABS.length - 1) {
-      setActiveTab(TABS[currentIndex + 1])
-    } else if (deltaX > 0 && currentIndex > 0) {
-      setActiveTab(TABS[currentIndex - 1])
+    if (deltaX < 0 && activeTabIndex < TABS.length - 1) {
+      switchTab(TABS[activeTabIndex + 1])
+    }
+
+    if (deltaX > 0 && activeTabIndex > 0) {
+      switchTab(TABS[activeTabIndex - 1])
     }
   }
 
-  const addNote = (event: FormEvent<HTMLFormElement>) => {
-    event.preventDefault()
-    if (!noteInput.trim()) {
-      return
-    }
+  const renderDashboardPage = (title: string, metrics: DashboardMetrics) => (
+    <section className="dashboard page">
+      <h1>{title}</h1>
+      <p className="subtitle">Track month-to-date spending by category.</p>
 
-    const next = [{ text: noteInput.trim(), at: new Date().toISOString() }, ...notes.map((text) => ({ text, at: '' }))]
-      .slice(0, 80)
-      .map((item) => item.text)
+      <div className="donut-wrap">
+        <div className="donut" style={{ background: donutBackground(metrics.totalsByCategory) }} aria-label="Category spending chart">
+          <div className="donut-center">
+            <span>Total</span>
+            <strong>{formatCents(metrics.monthlyTotalCents)}</strong>
+          </div>
+        </div>
+        <ul className="legend">
+          {CATEGORIES.map((category) => (
+            <li key={category}>
+              <span className="dot" style={{ backgroundColor: CATEGORY_COLORS[category] }} />
+              <span>{category}</span>
+              <strong>{formatCents(metrics.totalsByCategory[category])}</strong>
+            </li>
+          ))}
+        </ul>
+      </div>
 
-    setNotes(next)
-    save(STORAGE_KEYS.notes, next)
-    setNoteInput('')
-  }
+      <section className="transactions">
+        <h2>Recent Transactions</h2>
+        {metrics.recentTransactions.length === 0 ? (
+          <p className="empty">No expenses yet. Tap + to add one.</p>
+        ) : (
+          <ul>
+            {metrics.recentTransactions.map((expense) => (
+              <li key={expense.id}>
+                <div>
+                  <p className="label">{expense.note}</p>
+                  <p className="meta">
+                    {expense.category} • {dateLabel.format(new Date(expense.createdAt))}
+                  </p>
+                </div>
+                <strong>-{formatCents(expense.amountCents)}</strong>
+              </li>
+            ))}
+          </ul>
+        )}
+      </section>
+    </section>
+  )
 
   return (
-    <main className="app-shell" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+    <main className="app-shell">
       <header className="top-nav" role="tablist" aria-label="Account views">
-        <button
-          className={activeTab === 'personal' ? 'tab active' : 'tab'}
-          onClick={() => setActiveTab('personal')}
-          role="tab"
-          aria-selected={activeTab === 'personal'}
-        >
-          Personal
-        </button>
-        <button
-          className={activeTab === 'business' ? 'tab active' : 'tab'}
-          onClick={() => setActiveTab('business')}
-          role="tab"
-          aria-selected={activeTab === 'business'}
-        >
-          Business
-        </button>
-        <button
-          className={activeTab === 'notes' ? 'tab active' : 'tab'}
-          onClick={() => setActiveTab('notes')}
-          role="tab"
-          aria-selected={activeTab === 'notes'}
-        >
-          Notes
-        </button>
+        {TABS.map((tab) => (
+          <button
+            key={tab}
+            className={activeTab === tab ? 'tab active' : 'tab'}
+            onClick={() => switchTab(tab)}
+            role="tab"
+            aria-selected={activeTab === tab}
+          >
+            {TAB_LABELS[tab]}
+          </button>
+        ))}
       </header>
 
-      {activeTab === 'notes' ? (
-        <section className="notes-page">
-          <h1>Money Notes</h1>
-          <p className="subtitle">Quick thoughts, reminders, and budgeting ideas.</p>
-          <form className="note-form" onSubmit={addNote}>
-            <textarea
-              value={noteInput}
-              onChange={(event) => setNoteInput(event.target.value)}
-              placeholder="Write a quick note..."
-              rows={4}
-            />
-            <button type="submit">Save Note</button>
-          </form>
-          <ul className="notes-list">
-            {notes.length === 0 ? (
-              <li className="empty">No notes yet. Add one above.</li>
-            ) : (
-              notes.map((note, index) => <li key={`${note}-${index}`}>{note}</li>)
-            )}
-          </ul>
-        </section>
-      ) : (
-        <section className="dashboard">
-          <h1>{activeTab === 'personal' ? 'Personal Dashboard' : 'Business Dashboard'}</h1>
-          <p className="subtitle">Track month-to-date spending by category.</p>
+      <div className="page-viewport" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+        <div className="page-track" style={{ transform: `translate3d(-${activeTabIndex * 100}%, 0, 0)` }}>
+          {renderDashboardPage('Personal Dashboard', personalMetrics)}
+          {renderDashboardPage('Business Dashboard', businessMetrics)}
 
-          <div className="donut-wrap">
-            <div className="donut" style={{ background: donutBackground(monthTotals) }} aria-label="Category spending chart">
-              <div className="donut-center">
-                <span>Total</span>
-                <strong>{formatCents(monthlyTotal)}</strong>
-              </div>
-            </div>
-            <ul className="legend">
-              {CATEGORIES.map((category) => (
-                <li key={category}>
-                  <span className="dot" style={{ backgroundColor: CATEGORY_COLORS[category] }} />
-                  <span>{category}</span>
-                  <strong>{formatCents(monthTotals[category])}</strong>
-                </li>
-              ))}
+          <section className="notes-page page">
+            <h1>Money Notes</h1>
+            <p className="subtitle">Quick thoughts, reminders, and budgeting ideas.</p>
+            <form className="note-form" onSubmit={addNote}>
+              <textarea
+                value={moneyNoteInput}
+                onChange={(event) => setMoneyNoteInput(event.target.value)}
+                placeholder="Write a quick note..."
+                rows={4}
+              />
+              <button type="submit">Save Note</button>
+            </form>
+            <ul className="notes-list">
+              {notes.length === 0 ? (
+                <li className="empty">No notes yet. Add one above.</li>
+              ) : (
+                notes.map((note, index) => <li key={`${note}-${index}`}>{note}</li>)
+              )}
             </ul>
-          </div>
-
-          <section className="transactions">
-            <h2>Recent Transactions</h2>
-            {recentTransactions.length === 0 ? (
-              <p className="empty">No expenses yet. Tap + to add one.</p>
-            ) : (
-              <ul>
-                {recentTransactions.map((expense) => (
-                  <li key={expense.id}>
-                    <div>
-                      <p className="label">{expense.note}</p>
-                      <p className="meta">
-                        {expense.category} • {dateLabel.format(new Date(expense.createdAt))}
-                      </p>
-                    </div>
-                    <strong>-{formatCents(expense.amountCents)}</strong>
-                  </li>
-                ))}
-              </ul>
-            )}
           </section>
+        </div>
+      </div>
 
-          <button className="fab" onClick={() => setShowAdd(true)} aria-label="Add expense">
-            +
-          </button>
+      {activeTab !== 'notes' ? (
+        <button className="fab" onClick={() => setShowAdd(true)} aria-label="Add expense">
+          +
+        </button>
+      ) : null}
 
-          {showAdd ? (
-            <div className="modal-backdrop" onClick={() => setShowAdd(false)}>
-              <form
-                className="expense-form"
-                onSubmit={addExpense}
-                onClick={(event) => event.stopPropagation()}
-              >
-                <h3>Add Expense</h3>
-                <label>
-                  Amount
-                  <input
-                    type="text"
-                    inputMode="decimal"
-                    placeholder="45.00 or 45,00"
-                    value={amountInput}
-                    onChange={(event) => {
-                      setAmountInput(event.target.value)
-                      if (amountError) {
-                        setAmountError('')
-                      }
-                    }}
-                    required
-                  />
-                  {amountError ? <small className="field-error">{amountError}</small> : null}
-                </label>
-                <label>
-                  Category
-                  <select value={categoryInput} onChange={(event) => setCategoryInput(event.target.value as Category)}>
-                    {CATEGORIES.map((category) => (
-                      <option key={category} value={category}>
-                        {category}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-                <label>
-                  Note
-                  <input
-                    type="text"
-                    placeholder="Groceries"
-                    value={noteInput}
-                    onChange={(event) => setNoteInput(event.target.value)}
-                  />
-                </label>
-                <button type="submit">Save Expense</button>
-              </form>
-            </div>
-          ) : null}
-        </section>
-      )}
+      {showAdd ? (
+        <div className="modal-backdrop" onClick={() => setShowAdd(false)}>
+          <form className="expense-form" onSubmit={addExpense} onClick={(event) => event.stopPropagation()}>
+            <h3>Add Expense</h3>
+            <label>
+              Amount
+              <input
+                type="text"
+                inputMode="decimal"
+                placeholder="45.00 or 45,00"
+                value={amountInput}
+                onChange={(event) => {
+                  setAmountInput(event.target.value)
+                  if (amountError) {
+                    setAmountError('')
+                  }
+                }}
+                required
+              />
+              {amountError ? <small className="field-error">{amountError}</small> : null}
+            </label>
+            <label>
+              Category
+              <select value={categoryInput} onChange={(event) => setCategoryInput(event.target.value as Category)}>
+                {CATEGORIES.map((category) => (
+                  <option key={category} value={category}>
+                    {category}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label>
+              Note
+              <input
+                type="text"
+                placeholder="Groceries"
+                value={expenseNoteInput}
+                onChange={(event) => setExpenseNoteInput(event.target.value)}
+              />
+            </label>
+            <button type="submit">Save Expense</button>
+          </form>
+        </div>
+      ) : null}
     </main>
   )
 }
