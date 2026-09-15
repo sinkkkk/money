@@ -42,6 +42,7 @@ type StatsDayPoint = {
 type StatsMonthPoint = {
   label: string
   amountCents: number
+  monthKey: string
 }
 
 const STORAGE_KEYS = {
@@ -87,7 +88,19 @@ const monthLabel = new Intl.DateTimeFormat('en-US', {
   month: 'short',
 })
 
+const monthSelectLabel = new Intl.DateTimeFormat('en-US', {
+  month: 'long',
+  year: 'numeric',
+})
+
 const monthKey = (date = new Date()) => `${date.getFullYear()}-${date.getMonth()}`
+
+const monthFromKey = (key: string) => {
+  const [yearRaw, monthRaw] = key.split('-')
+  const year = Number(yearRaw)
+  const month = Number(monthRaw)
+  return new Date(year, month, 1)
+}
 
 const dayKey = (date = new Date()) => {
   const year = date.getFullYear()
@@ -269,16 +282,15 @@ const ensureSettings = (): AppSettings => {
   return settings
 }
 
-const buildDashboardMetrics = (store: DashboardStore): DashboardMetrics => {
+const buildDashboardMetrics = (store: DashboardStore, selectedMonth: string): DashboardMetrics => {
   const totalsByCategory = Object.fromEntries(store.categories.map((category) => [category.id, 0])) as Record<string, number>
-  const thisMonth = monthKey()
 
   for (const expense of store.expenses) {
     if (!(expense.categoryId in totalsByCategory)) {
       totalsByCategory[expense.categoryId] = 0
     }
 
-    if (monthKey(new Date(expense.createdAt)) === thisMonth) {
+    if (monthKey(new Date(expense.createdAt)) === selectedMonth) {
       totalsByCategory[expense.categoryId] += expense.amountCents
     }
   }
@@ -291,6 +303,21 @@ const buildDashboardMetrics = (store: DashboardStore): DashboardMetrics => {
     monthlyTotalCents,
     recentTransactions,
   }
+}
+
+const buildMonthOptions = (expenses: Expense[]) => {
+  const current = monthKey(new Date())
+  const keys = new Set<string>([current])
+  for (const expense of expenses) {
+    keys.add(monthKey(new Date(expense.createdAt)))
+  }
+
+  return [...keys]
+    .sort((a, b) => monthFromKey(b).getTime() - monthFromKey(a).getTime())
+    .map((key) => ({
+      value: key,
+      label: monthSelectLabel.format(monthFromKey(key)),
+    }))
 }
 
 const donutBackground = (categories: CategoryItem[], totals: Record<string, number>) => {
@@ -356,7 +383,7 @@ const buildStatsSeries = (expenses: Expense[]) => {
         total += expense.amountCents
       }
     }
-    monthly.push({ label: monthLabel.format(d), amountCents: total })
+    monthly.push({ label: monthLabel.format(d), amountCents: total, monthKey: key })
   }
 
   const thisMonthSpend = monthly[monthly.length - 1]?.amountCents ?? 0
@@ -396,13 +423,25 @@ function App() {
   const [newCategoryName, setNewCategoryName] = useState('')
   const [newCategoryColor, setNewCategoryColor] = useState('#6a87ff')
   const [confirmClearOpen, setConfirmClearOpen] = useState(false)
+  const [selectedMonthByAccount, setSelectedMonthByAccount] = useState<Record<AccountKind, string>>({
+    personal: monthKey(new Date()),
+    business: monthKey(new Date()),
+  })
 
   const touchStartRef = useRef<{ x: number; y: number } | null>(null)
   const longPressTimerRef = useRef<number | null>(null)
   const amountInputRef = useRef<HTMLInputElement | null>(null)
 
-  const personalMetrics = useMemo(() => buildDashboardMetrics(personal), [personal])
-  const businessMetrics = useMemo(() => buildDashboardMetrics(business), [business])
+  const personalMonthOptions = useMemo(() => buildMonthOptions(personal.expenses), [personal.expenses])
+  const businessMonthOptions = useMemo(() => buildMonthOptions(business.expenses), [business.expenses])
+  const personalMetrics = useMemo(
+    () => buildDashboardMetrics(personal, selectedMonthByAccount.personal),
+    [personal, selectedMonthByAccount.personal],
+  )
+  const businessMetrics = useMemo(
+    () => buildDashboardMetrics(business, selectedMonthByAccount.business),
+    [business, selectedMonthByAccount.business],
+  )
   const statsSeries = useMemo(() => buildStatsSeries(personal.expenses), [personal.expenses])
 
   const activeTabIndex = Math.max(0, TABS.indexOf(activeTab))
@@ -693,10 +732,34 @@ function App() {
     }
   }
 
-  const renderDashboardPage = (account: AccountKind, title: string, store: DashboardStore, metrics: DashboardMetrics) => (
+  const renderDashboardPage = (
+    account: AccountKind,
+    title: string,
+    store: DashboardStore,
+    metrics: DashboardMetrics,
+    monthOptions: { value: string; label: string }[],
+  ) => (
     <section className="dashboard page" key={account}>
       <h1>{title}</h1>
       <p className="subtitle">Track month-to-date spending by category.</p>
+      <label className="month-picker">
+        <span>Month</span>
+        <select
+          value={selectedMonthByAccount[account]}
+          onChange={(event) =>
+            setSelectedMonthByAccount((prev) => ({
+              ...prev,
+              [account]: event.target.value,
+            }))
+          }
+        >
+          {monthOptions.map((option) => (
+            <option key={option.value} value={option.value}>
+              {option.label}
+            </option>
+          ))}
+        </select>
+      </label>
 
       <div className="donut-wrap">
         <div className="donut" style={{ background: donutBackground(store.categories, metrics.totalsByCategory) }} aria-label="Category spending chart">
@@ -795,8 +858,8 @@ function App() {
 
       <div className="page-viewport" style={pageViewportStyle} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
         <div className="page-track" style={pageTrackStyle}>
-          {renderDashboardPage('personal', 'Personal Dashboard', personal, personalMetrics)}
-          {renderDashboardPage('business', 'Business Dashboard', business, businessMetrics)}
+          {renderDashboardPage('personal', 'Personal Dashboard', personal, personalMetrics, personalMonthOptions)}
+          {renderDashboardPage('business', 'Business Dashboard', business, businessMetrics, businessMonthOptions)}
 
           <section className="stats-page page">
             <h1>Personal Stats</h1>
@@ -810,9 +873,16 @@ function App() {
                 <p className="empty">No personal expenses yet. Add one to see trend lines.</p>
               ) : (
                 <>
-                  <svg viewBox="0 0 100 100" className="line-chart" aria-label="Daily spending chart">
-                    <polyline points={dailyPoints} />
-                  </svg>
+                  <div className="line-chart-shell">
+                    <div className="y-axis-labels" aria-hidden="true">
+                      {[1, 0.66, 0.33, 0].map((multiplier) => (
+                        <span key={multiplier}>{formatCents(Math.round(maxDaily * multiplier), settings.currencySymbol)}</span>
+                      ))}
+                    </div>
+                    <svg viewBox="0 0 100 100" className="line-chart" aria-label="Daily spending chart">
+                      <polyline points={dailyPoints} />
+                    </svg>
+                  </div>
                   <div className="axis-labels">
                     {statsSeries.daily.map((point) => (
                       <span key={point.label}>{point.label}</span>
@@ -835,6 +905,7 @@ function App() {
               <div className="month-bars" role="img" aria-label="Monthly spending bars">
                 {statsSeries.monthly.map((point) => (
                   <div key={point.label} className="month-bar-wrap">
+                    <span className="month-amount">{formatCents(point.amountCents, settings.currencySymbol)}</span>
                     <div className="month-bar" style={{ height: `${Math.max((point.amountCents / maxMonthly) * 96, 8)}px` }} />
                     <span>{point.label}</span>
                   </div>
