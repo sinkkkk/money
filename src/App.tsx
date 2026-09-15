@@ -38,12 +38,12 @@ const TAB_LABELS: Record<TabId, string> = {
 }
 
 const CATEGORY_COLORS: Record<Category, string> = {
-  Food: '#34d399',
-  Transport: '#60a5fa',
-  Shopping: '#f472b6',
-  Bills: '#fbbf24',
-  Health: '#a78bfa',
-  Other: '#9ca3af',
+  Food: '#58c7b3',
+  Transport: '#6a87ff',
+  Shopping: '#9b7bff',
+  Bills: '#f3b878',
+  Health: '#7dc8f8',
+  Other: '#8493ab',
 }
 
 const currency = new Intl.NumberFormat('en-US', {
@@ -223,7 +223,8 @@ function App() {
   const activeDashboardStorageKey = activeTab === 'personal' ? STORAGE_KEYS.personal : STORAGE_KEYS.business
   const activeDashboardStore = activeTab === 'personal' ? personal : business
   const setActiveDashboardStore = activeTab === 'personal' ? setPersonal : setBusiness
-  const activeTabIndex = TABS.indexOf(activeTab)
+  const activeTabIndex = Math.max(0, TABS.indexOf(activeTab))
+  const trackTranslatePercent = (activeTabIndex * 100) / TABS.length
 
   const switchTab = (tab: TabId) => {
     setShowAdd(false)
@@ -348,7 +349,7 @@ function App() {
                     {expense.category} • {dateLabel.format(new Date(expense.createdAt))}
                   </p>
                 </div>
-                <strong>-{formatCents(expense.amountCents)}</strong>
+                <strong className="expense-outflow">-{formatCents(expense.amountCents)}</strong>
               </li>
             ))}
           </ul>
@@ -374,7 +375,7 @@ function App() {
       </header>
 
       <div className="page-viewport" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
-        <div className="page-track" style={{ transform: `translate3d(-${activeTabIndex * 100}%, 0, 0)` }}>
+        <div className="page-track" style={{ transform: `translate3d(-${trackTranslatePercent}%, 0, 0)` }}>
           {renderDashboardPage('Personal Dashboard', personalMetrics)}
           {renderDashboardPage('Business Dashboard', businessMetrics)}
 
