@@ -10,7 +10,6 @@
   --border: #2a3345;
   --accent-primary: #6a87ff;
   --accent-secondary: #536fe3;
-  --accent-soft: #273554;
   --danger: #ff7a86;
   --danger-strong: #ff636f;
   font-synthesis: none;
@@ -21,6 +20,11 @@
 
 * {
   box-sizing: border-box;
+}
+
+html,
+body {
+  touch-action: manipulation;
 }
 
 body {
@@ -48,7 +52,7 @@ body {
   top: max(8px, env(safe-area-inset-top, 0px));
   z-index: 10;
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   gap: 8px;
   background: color-mix(in srgb, var(--surface-1) 88%, transparent);
   backdrop-filter: blur(8px);
@@ -63,7 +67,8 @@ body {
   background: transparent;
   color: var(--text-secondary);
   font-weight: 600;
-  padding: 10px 8px;
+  font-size: 0.85rem;
+  padding: 10px 6px;
 }
 
 .tab.active {
@@ -83,6 +88,11 @@ h2 {
   color: var(--text-primary);
 }
 
+h3 {
+  margin: 0;
+  color: var(--text-primary);
+}
+
 .subtitle {
   margin: 0;
   color: var(--text-secondary);
@@ -90,7 +100,8 @@ h2 {
 }
 
 .dashboard,
-.notes-page {
+.notes-page,
+.settings-page {
   margin-top: 12px;
 }
 
@@ -100,22 +111,28 @@ h2 {
 
 .page-track {
   display: flex;
-  width: 300%;
+  width: calc(var(--page-count) * 100%);
   transition: transform 280ms ease;
   will-change: transform;
 }
 
 .page {
-  width: calc(100% / 3);
-  flex: 0 0 calc(100% / 3);
+  width: calc(100% / var(--page-count));
+  flex: 0 0 calc(100% / var(--page-count));
   padding: 0 2px;
+}
+
+.donut-wrap,
+.transactions,
+.settings-card,
+.notes-list li {
+  background: var(--surface-1);
+  border: 1px solid var(--border);
+  border-radius: 16px;
 }
 
 .donut-wrap {
   margin-top: 18px;
-  background: var(--surface-1);
-  border: 1px solid var(--border);
-  border-radius: 16px;
   padding: 16px;
 }
 
@@ -174,13 +191,12 @@ h2 {
 
 .transactions {
   margin-top: 14px;
-  background: var(--surface-1);
-  border: 1px solid var(--border);
-  border-radius: 16px;
   padding: 16px;
 }
 
-.transactions ul {
+.transactions ul,
+.notes-list,
+.category-list {
   list-style: none;
   padding: 0;
   margin: 0;
@@ -238,17 +254,27 @@ h2 {
   box-shadow: 0 10px 28px rgba(0, 0, 0, 0.35);
 }
 
-.modal-backdrop {
+.modal-backdrop,
+.action-sheet-backdrop {
   position: fixed;
   inset: 0;
   background: rgba(4, 6, 11, 0.72);
   display: flex;
-  align-items: end;
   justify-content: center;
+}
+
+.modal-backdrop {
+  align-items: end;
   padding: 12px 12px calc(env(safe-area-inset-bottom, 0px) + 12px);
 }
 
-.expense-form {
+.action-sheet-backdrop {
+  align-items: end;
+  padding: 12px;
+}
+
+.expense-form,
+.action-sheet {
   width: min(480px, 100%);
   background: var(--surface-1);
   border: 1px solid var(--border);
@@ -258,13 +284,9 @@ h2 {
   gap: 12px;
 }
 
-.expense-form h3 {
-  margin: 0;
-  color: var(--text-primary);
-}
-
 .expense-form label,
-.note-form {
+.note-form,
+.inline-form {
   display: grid;
   gap: 8px;
   font-size: 0.9rem;
@@ -278,7 +300,11 @@ h2 {
 
 .expense-form input,
 .expense-form select,
-.note-form textarea {
+.expense-form textarea,
+.note-form textarea,
+.inline-form input,
+.settings-card input,
+.settings-card select {
   background: var(--surface-2);
   color: #ebf0f8;
   border: 1px solid var(--border);
@@ -288,13 +314,65 @@ h2 {
 }
 
 .expense-form button,
-.note-form button {
+.note-form button,
+.inline-form button,
+.chip,
+.action-sheet button,
+.danger-button {
   border: 0;
-  background: linear-gradient(145deg, var(--accent-primary), var(--accent-secondary));
-  color: #f8faff;
   border-radius: 10px;
   padding: 10px 14px;
   font-weight: 600;
+  font-size: 0.92rem;
+}
+
+.expense-form button,
+.note-form button,
+.inline-form button,
+.chip.active {
+  background: linear-gradient(145deg, var(--accent-primary), var(--accent-secondary));
+  color: #f8faff;
+}
+
+.chip-row {
+  display: flex;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.chip {
+  background: var(--surface-2);
+  color: var(--text-secondary);
+}
+
+.account-switch {
+  margin-bottom: 12px;
+}
+
+.settings-card {
+  margin-top: 14px;
+  padding: 16px;
+}
+
+.category-list li {
+  display: grid;
+  grid-template-columns: 44px 1fr auto;
+  gap: 10px;
+  align-items: center;
+}
+
+input[type='color'] {
+  appearance: none;
+  border: none;
+  width: 40px;
+  height: 40px;
+  background: transparent;
+  padding: 0;
+}
+
+.inline-form {
+  grid-template-columns: 1fr 44px auto;
+  margin-top: 12px;
 }
 
 .note-form {
@@ -302,17 +380,21 @@ h2 {
 }
 
 .notes-list {
-  list-style: none;
-  padding: 0;
   margin: 16px 0 0;
-  display: grid;
   gap: 10px;
 }
 
 .notes-list li {
-  background: var(--surface-1);
-  border: 1px solid var(--border);
-  border-radius: 12px;
   padding: 12px;
   color: #dce4f2;
+}
+
+.action-sheet button {
+  background: var(--surface-2);
+  color: var(--text-primary);
+}
+
+.danger-button {
+  background: #3d2028;
+  color: #ffc5cb;
 }

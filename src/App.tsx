@@ -1,57 +1,67 @@
 import { useMemo, useRef, useState } from 'react'
-import type { FormEvent, TouchEvent } from 'react'
+import type { CSSProperties, FormEvent, TouchEvent } from 'react'
 
-type TabId = 'personal' | 'business' | 'notes'
-type Category = 'Food' | 'Transport' | 'Shopping' | 'Bills' | 'Health' | 'Other'
+type TabId = 'personal' | 'business' | 'notes' | 'settings'
+type AccountKind = 'personal' | 'business'
+type CurrencySymbol = '€' | '$'
 
 type Expense = {
   id: string
   amountCents: number
-  category: Category
+  categoryId: string
   note: string
   createdAt: string
 }
 
+type CategoryItem = {
+  id: string
+  name: string
+  color: string
+}
+
 type DashboardStore = {
   expenses: Expense[]
+  categories: CategoryItem[]
 }
 
 type DashboardMetrics = {
-  totalsByCategory: Record<Category, number>
+  totalsByCategory: Record<string, number>
   monthlyTotalCents: number
   recentTransactions: Expense[]
 }
 
+type AppSettings = {
+  currencySymbol: CurrencySymbol
+}
+
 const STORAGE_KEYS = {
-  personal: 'money.pwa.personal.v1',
-  business: 'money.pwa.business.v1',
+  personal: 'money.pwa.personal.v2',
+  business: 'money.pwa.business.v2',
   notes: 'money.pwa.notes.v1',
+  settings: 'money.pwa.settings.v1',
 } as const
 
-const CATEGORIES: Category[] = ['Food', 'Transport', 'Shopping', 'Bills', 'Health', 'Other']
-const TABS: TabId[] = ['personal', 'business', 'notes']
+const DEFAULT_CATEGORIES: CategoryItem[] = [
+  { id: 'food', name: 'Food', color: '#58c7b3' },
+  { id: 'transport', name: 'Transport', color: '#6a87ff' },
+  { id: 'shopping', name: 'Shopping', color: '#9b7bff' },
+  { id: 'bills', name: 'Bills', color: '#f3b878' },
+  { id: 'health', name: 'Health', color: '#7dc8f8' },
+  { id: 'other', name: 'Other', color: '#8493ab' },
+]
+
+const TABS: TabId[] = ['personal', 'business', 'notes', 'settings']
 
 const TAB_LABELS: Record<TabId, string> = {
   personal: 'Personal',
   business: 'Business',
   notes: 'Notes',
+  settings: 'Settings',
 }
 
-const CATEGORY_COLORS: Record<Category, string> = {
-  Food: '#58c7b3',
-  Transport: '#6a87ff',
-  Shopping: '#9b7bff',
-  Bills: '#f3b878',
-  Health: '#7dc8f8',
-  Other: '#8493ab',
+const SETTINGS_DEFAULT: AppSettings = {
+  currencySymbol: '€',
 }
-
-const currency = new Intl.NumberFormat('en-US', {
-  style: 'currency',
-  currency: 'USD',
-  minimumFractionDigits: 2,
-  maximumFractionDigits: 2,
-})
 
 const dateLabel = new Intl.DateTimeFormat('en-US', {
   month: 'short',
@@ -72,7 +82,18 @@ const safeRead = <T,>(key: string, fallback: T): T => {
   }
 }
 
-const formatCents = (cents: number) => currency.format(cents / 100)
+const save = (key: string, value: unknown) => {
+  localStorage.setItem(key, JSON.stringify(value))
+}
+
+const formatCents = (cents: number, symbol: CurrencySymbol) => {
+  const absolute = Math.abs(cents) / 100
+  const formatted = absolute.toLocaleString(undefined, {
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  })
+  return `${symbol}${formatted}`
+}
 
 const dollarsToCents = (amount: number) => Math.round(amount * 100)
 
@@ -101,72 +122,139 @@ const parseCurrencyInputToCents = (value: string): number | null => {
   return cents
 }
 
-const save = (key: string, value: unknown) => {
-  localStorage.setItem(key, JSON.stringify(value))
+const normalizeCategories = (input: unknown): CategoryItem[] => {
+  if (!Array.isArray(input)) {
+    return DEFAULT_CATEGORIES
+  }
+
+  const categories = input
+    .filter((value): value is CategoryItem => {
+      if (!value || typeof value !== 'object') {
+        return false
+      }
+      const item = value as Partial<CategoryItem>
+      return (
+        typeof item.id === 'string' &&
+        item.id.trim().length > 0 &&
+        typeof item.name === 'string' &&
+        item.name.trim().length > 0 &&
+        typeof item.color === 'string' &&
+        item.color.startsWith('#')
+      )
+    })
+    .map((item) => ({
+      id: item.id.trim().toLowerCase(),
+      name: item.name.trim(),
+      color: item.color,
+    }))
+
+  const unique = categories.filter((category, index) => categories.findIndex((it) => it.id === category.id) === index)
+  return unique.length > 0 ? unique : DEFAULT_CATEGORIES
 }
 
-const seedData = (kind: 'personal' | 'business'): DashboardStore => {
+const legacyCategoryToId = (value: string): string => {
+  const normalized = value.trim().toLowerCase()
+  const mapped = DEFAULT_CATEGORIES.find((category) => category.name.toLowerCase() === normalized)
+  return mapped?.id ?? 'other'
+}
+
+const seedData = (kind: AccountKind): DashboardStore => {
   const now = new Date()
-  const make = (daysAgo: number, amountCents: number, category: Category, note: string): Expense => {
+  const make = (daysAgo: number, amountCents: number, categoryId: string, note: string): Expense => {
     const d = new Date(now)
     d.setDate(now.getDate() - daysAgo)
     return {
-      id: `${kind}-${d.getTime()}-${category}`,
+      id: `${kind}-${d.getTime()}-${categoryId}`,
       amountCents,
-      category,
+      categoryId,
       note,
       createdAt: d.toISOString(),
     }
   }
 
   return {
+    categories: DEFAULT_CATEGORIES,
     expenses:
       kind === 'personal'
         ? [
-            make(1, dollarsToCents(24), 'Food', 'Lunch'),
-            make(2, dollarsToCents(18), 'Transport', 'Rideshare'),
-            make(5, dollarsToCents(61), 'Shopping', 'Groceries'),
+            make(1, dollarsToCents(24), 'food', 'Lunch'),
+            make(2, dollarsToCents(18), 'transport', 'Rideshare'),
+            make(5, dollarsToCents(61), 'shopping', 'Groceries'),
           ]
         : [
-            make(0, dollarsToCents(145), 'Bills', 'Workspace software'),
-            make(3, dollarsToCents(72), 'Transport', 'Client visit train'),
-            make(8, dollarsToCents(34), 'Food', 'Team coffee'),
+            make(0, dollarsToCents(145), 'bills', 'Workspace software'),
+            make(3, dollarsToCents(72), 'transport', 'Client visit train'),
+            make(8, dollarsToCents(34), 'food', 'Team coffee'),
           ],
   }
 }
 
 const ensureStore = (key: string, fallback: DashboardStore) => {
-  const existing = safeRead<DashboardStore | null>(key, null)
+  const existing = safeRead<Record<string, unknown> | null>(key, null)
   if (!existing) {
     save(key, fallback)
     return fallback
   }
 
-  const normalized: DashboardStore = {
-    expenses: existing.expenses.map((expense) => {
-      if (typeof expense.amountCents === 'number') {
-        return expense
-      }
+  const categories = normalizeCategories(existing.categories)
+  const fallbackCategoryId = categories.find((category) => category.id === 'other')?.id ?? categories[0].id
 
-      const legacyAmount = (expense as Expense & { amount?: number }).amount
+  const expensesSource = Array.isArray(existing.expenses) ? existing.expenses : []
+  const normalizedExpenses: Expense[] = expensesSource
+    .filter((value): value is Record<string, unknown> => Boolean(value) && typeof value === 'object')
+    .map((expense) => {
+      const amountCents =
+        typeof expense.amountCents === 'number'
+          ? Math.round(expense.amountCents)
+          : typeof expense.amount === 'number'
+            ? dollarsToCents(expense.amount)
+            : 0
+
+      const legacyCategory = typeof expense.category === 'string' ? legacyCategoryToId(expense.category) : null
+      const categoryIdRaw = typeof expense.categoryId === 'string' ? expense.categoryId.trim().toLowerCase() : legacyCategory
+      const categoryId = categories.some((category) => category.id === categoryIdRaw)
+        ? (categoryIdRaw as string)
+        : fallbackCategoryId
+
       return {
-        ...expense,
-        amountCents: dollarsToCents(Number.isFinite(legacyAmount) ? legacyAmount ?? 0 : 0),
+        id: typeof expense.id === 'string' ? expense.id : `expense-${Date.now()}-${Math.random()}`,
+        amountCents: Number.isFinite(amountCents) ? Math.max(0, amountCents) : 0,
+        categoryId,
+        note: typeof expense.note === 'string' && expense.note.trim() ? expense.note.trim() : 'Expense',
+        createdAt: typeof expense.createdAt === 'string' ? expense.createdAt : new Date().toISOString(),
       }
-    }),
+    })
+    .filter((expense) => expense.amountCents > 0)
+
+  const normalized: DashboardStore = {
+    categories,
+    expenses: normalizedExpenses,
   }
 
   save(key, normalized)
   return normalized
 }
 
+const ensureSettings = (): AppSettings => {
+  const settings = safeRead<AppSettings | null>(STORAGE_KEYS.settings, null)
+  if (!settings || (settings.currencySymbol !== '€' && settings.currencySymbol !== '$')) {
+    save(STORAGE_KEYS.settings, SETTINGS_DEFAULT)
+    return SETTINGS_DEFAULT
+  }
+  return settings
+}
+
 const buildDashboardMetrics = (store: DashboardStore): DashboardMetrics => {
-  const totalsByCategory = Object.fromEntries(CATEGORIES.map((category) => [category, 0])) as Record<Category, number>
+  const totalsByCategory = Object.fromEntries(store.categories.map((category) => [category.id, 0])) as Record<string, number>
   const thisMonth = monthKey()
 
   for (const expense of store.expenses) {
+    if (!(expense.categoryId in totalsByCategory)) {
+      totalsByCategory[expense.categoryId] = 0
+    }
+
     if (monthKey(new Date(expense.createdAt)) === thisMonth) {
-      totalsByCategory[expense.category] += expense.amountCents
+      totalsByCategory[expense.categoryId] += expense.amountCents
     }
   }
 
@@ -180,60 +268,120 @@ const buildDashboardMetrics = (store: DashboardStore): DashboardMetrics => {
   }
 }
 
-const donutBackground = (totals: Record<Category, number>) => {
+const donutBackground = (categories: CategoryItem[], totals: Record<string, number>) => {
   const total = Object.values(totals).reduce((sum, value) => sum + value, 0)
   if (total <= 0) {
     return '#2b3443'
   }
 
   let progress = 0
-  const stops = CATEGORIES.filter((category) => totals[category] > 0).map((category) => {
-    const share = (totals[category] / total) * 100
-    const start = progress
-    const end = progress + share
-    progress = end
-    return `${CATEGORY_COLORS[category]} ${start}% ${end}%`
-  })
+  const stops = categories
+    .filter((category) => (totals[category.id] ?? 0) > 0)
+    .map((category) => {
+      const share = ((totals[category.id] ?? 0) / total) * 100
+      const start = progress
+      const end = progress + share
+      progress = end
+      return `${category.color} ${start}% ${end}%`
+    })
 
   return `conic-gradient(${stops.join(', ')})`
 }
 
 function App() {
   const [activeTab, setActiveTab] = useState<TabId>('personal')
-  const [personal, setPersonal] = useState<DashboardStore>(() =>
-    ensureStore(STORAGE_KEYS.personal, seedData('personal')),
-  )
-  const [business, setBusiness] = useState<DashboardStore>(() =>
-    ensureStore(STORAGE_KEYS.business, seedData('business')),
-  )
+  const [personal, setPersonal] = useState<DashboardStore>(() => ensureStore(STORAGE_KEYS.personal, seedData('personal')))
+  const [business, setBusiness] = useState<DashboardStore>(() => ensureStore(STORAGE_KEYS.business, seedData('business')))
   const [notes, setNotes] = useState<string[]>(() => safeRead(STORAGE_KEYS.notes, []))
+  const [settings, setSettings] = useState<AppSettings>(() => ensureSettings())
 
-  const [showAdd, setShowAdd] = useState(false)
+  const [showExpenseEditor, setShowExpenseEditor] = useState(false)
+  const [expenseEditId, setExpenseEditId] = useState<string | null>(null)
   const [amountInput, setAmountInput] = useState('')
   const [amountError, setAmountError] = useState('')
-  const [categoryInput, setCategoryInput] = useState<Category>('Food')
+  const [categoryInput, setCategoryInput] = useState('food')
   const [expenseNoteInput, setExpenseNoteInput] = useState('')
+
+  const [noteActionIndex, setNoteActionIndex] = useState<number | null>(null)
+  const [transactionActionId, setTransactionActionId] = useState<string | null>(null)
+  const [showNoteEditor, setShowNoteEditor] = useState(false)
+  const [noteDraft, setNoteDraft] = useState('')
+
   const [moneyNoteInput, setMoneyNoteInput] = useState('')
+  const [settingsAccount, setSettingsAccount] = useState<AccountKind>('personal')
+  const [newCategoryName, setNewCategoryName] = useState('')
+  const [newCategoryColor, setNewCategoryColor] = useState('#6a87ff')
 
   const touchStartRef = useRef<{ x: number; y: number } | null>(null)
+  const longPressTimerRef = useRef<number | null>(null)
 
   const personalMetrics = useMemo(() => buildDashboardMetrics(personal), [personal])
   const businessMetrics = useMemo(() => buildDashboardMetrics(business), [business])
 
-  const activeDashboardStorageKey = activeTab === 'personal' ? STORAGE_KEYS.personal : STORAGE_KEYS.business
-  const activeDashboardStore = activeTab === 'personal' ? personal : business
-  const setActiveDashboardStore = activeTab === 'personal' ? setPersonal : setBusiness
   const activeTabIndex = Math.max(0, TABS.indexOf(activeTab))
   const trackTranslatePercent = (activeTabIndex * 100) / TABS.length
+  const pageViewportStyle = { '--page-count': TABS.length } as CSSProperties
+  const pageTrackStyle = { transform: `translate3d(-${trackTranslatePercent}%, 0, 0)` }
 
-  const switchTab = (tab: TabId) => {
-    setShowAdd(false)
-    setActiveTab(tab)
+  const activeDashboardStore = activeTab === 'business' ? business : personal
+  const activeDashboardStorageKey = activeTab === 'business' ? STORAGE_KEYS.business : STORAGE_KEYS.personal
+
+  const saveSettings = (next: AppSettings) => {
+    setSettings(next)
+    save(STORAGE_KEYS.settings, next)
   }
 
-  const addExpense = (event: FormEvent<HTMLFormElement>) => {
+  const updateAccountStore = (account: AccountKind, updater: (store: DashboardStore) => DashboardStore) => {
+    if (account === 'personal') {
+      setPersonal((prev) => {
+        const next = updater(prev)
+        save(STORAGE_KEYS.personal, next)
+        return next
+      })
+      return
+    }
+
+    setBusiness((prev) => {
+      const next = updater(prev)
+      save(STORAGE_KEYS.business, next)
+      return next
+    })
+  }
+
+  const switchTab = (tab: TabId) => {
+    setActiveTab(tab)
+    setShowExpenseEditor(false)
+    setTransactionActionId(null)
+    setNoteActionIndex(null)
+  }
+
+  const openAddExpense = () => {
+    if (activeTab !== 'personal' && activeTab !== 'business') {
+      return
+    }
+
+    const firstCategory = activeDashboardStore.categories[0]?.id ?? 'other'
+    setExpenseEditId(null)
+    setAmountInput('')
+    setAmountError('')
+    setCategoryInput(firstCategory)
+    setExpenseNoteInput('')
+    setShowExpenseEditor(true)
+  }
+
+  const openEditExpense = (expense: Expense) => {
+    setExpenseEditId(expense.id)
+    setAmountInput((expense.amountCents / 100).toFixed(2))
+    setAmountError('')
+    setCategoryInput(expense.categoryId)
+    setExpenseNoteInput(expense.note)
+    setShowExpenseEditor(true)
+    setTransactionActionId(null)
+  }
+
+  const submitExpense = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    if (activeTab === 'notes') {
+    if (activeTab !== 'personal' && activeTab !== 'business') {
       return
     }
 
@@ -243,26 +391,60 @@ function App() {
       return
     }
 
+    const validCategoryId = activeDashboardStore.categories.some((category) => category.id === categoryInput)
+      ? categoryInput
+      : activeDashboardStore.categories[0]?.id ?? 'other'
+
     const nextExpense: Expense = {
-      id: `${activeTab}-${Date.now()}`,
+      id: expenseEditId ?? `${activeTab}-${Date.now()}`,
       amountCents,
-      category: categoryInput,
+      categoryId: validCategoryId,
       note: expenseNoteInput.trim() || 'Expense',
-      createdAt: new Date().toISOString(),
+      createdAt: expenseEditId
+        ? activeDashboardStore.expenses.find((expense) => expense.id === expenseEditId)?.createdAt ?? new Date().toISOString()
+        : new Date().toISOString(),
     }
 
-    const nextStore = {
-      expenses: [nextExpense, ...activeDashboardStore.expenses],
+    const nextStore: DashboardStore = {
+      ...activeDashboardStore,
+      expenses: expenseEditId
+        ? activeDashboardStore.expenses.map((expense) => (expense.id === expenseEditId ? nextExpense : expense))
+        : [nextExpense, ...activeDashboardStore.expenses],
     }
 
-    setActiveDashboardStore(nextStore)
+    if (activeTab === 'personal') {
+      setPersonal(nextStore)
+    } else {
+      setBusiness(nextStore)
+    }
+
     save(activeDashboardStorageKey, nextStore)
 
+    setShowExpenseEditor(false)
+    setExpenseEditId(null)
     setAmountInput('')
     setAmountError('')
-    setCategoryInput('Food')
     setExpenseNoteInput('')
-    setShowAdd(false)
+  }
+
+  const deleteExpense = (expenseId: string) => {
+    if (activeTab !== 'personal' && activeTab !== 'business') {
+      return
+    }
+
+    const nextStore: DashboardStore = {
+      ...activeDashboardStore,
+      expenses: activeDashboardStore.expenses.filter((expense) => expense.id !== expenseId),
+    }
+
+    if (activeTab === 'personal') {
+      setPersonal(nextStore)
+    } else {
+      setBusiness(nextStore)
+    }
+
+    save(activeDashboardStorageKey, nextStore)
+    setTransactionActionId(null)
   }
 
   const addNote = (event: FormEvent<HTMLFormElement>) => {
@@ -272,10 +454,48 @@ function App() {
     }
 
     const next = [moneyNoteInput.trim(), ...notes].slice(0, 80)
-
     setNotes(next)
     save(STORAGE_KEYS.notes, next)
     setMoneyNoteInput('')
+  }
+
+  const saveEditedNote = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    if (noteActionIndex === null || !noteDraft.trim()) {
+      return
+    }
+
+    const next = notes.map((note, index) => (index === noteActionIndex ? noteDraft.trim() : note))
+    setNotes(next)
+    save(STORAGE_KEYS.notes, next)
+    setShowNoteEditor(false)
+    setNoteActionIndex(null)
+    setNoteDraft('')
+  }
+
+  const deleteNote = (index: number) => {
+    const next = notes.filter((_, noteIndex) => noteIndex !== index)
+    setNotes(next)
+    save(STORAGE_KEYS.notes, next)
+    setNoteActionIndex(null)
+  }
+
+  const startLongPress = (callback: () => void) => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current)
+    }
+
+    longPressTimerRef.current = window.setTimeout(() => {
+      callback()
+      longPressTimerRef.current = null
+    }, 450)
+  }
+
+  const clearLongPress = () => {
+    if (longPressTimerRef.current !== null) {
+      window.clearTimeout(longPressTimerRef.current)
+      longPressTimerRef.current = null
+    }
   }
 
   const onTouchStart = (event: TouchEvent<HTMLElement>) => {
@@ -290,7 +510,7 @@ function App() {
   }
 
   const onTouchEnd = (event: TouchEvent<HTMLElement>) => {
-    if (showAdd || !touchStartRef.current) {
+    if (showExpenseEditor || showNoteEditor || !touchStartRef.current) {
       return
     }
 
@@ -312,24 +532,86 @@ function App() {
     }
   }
 
-  const renderDashboardPage = (title: string, metrics: DashboardMetrics) => (
-    <section className="dashboard page">
+  const manageCategoriesStore = settingsAccount === 'personal' ? personal : business
+
+  const addCategory = (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault()
+    const name = newCategoryName.trim()
+    if (!name) {
+      return
+    }
+
+    const idBase = name.toLowerCase().replace(/[^a-z0-9]+/g, '-')
+    const safeBase = idBase.length > 0 ? idBase : 'category'
+    const uniqueId = `${safeBase}-${Date.now().toString(36).slice(-4)}`
+
+    updateAccountStore(settingsAccount, (store) => ({
+      ...store,
+      categories: [...store.categories, { id: uniqueId, name, color: newCategoryColor }],
+    }))
+
+    setNewCategoryName('')
+  }
+
+  const updateCategory = (account: AccountKind, categoryId: string, patch: Partial<CategoryItem>) => {
+    updateAccountStore(account, (store) => ({
+      ...store,
+      categories: store.categories.map((category) =>
+        category.id === categoryId
+          ? {
+              ...category,
+              ...patch,
+              name: patch.name?.trim() ? patch.name.trim() : category.name,
+            }
+          : category,
+      ),
+    }))
+  }
+
+  const removeCategory = (account: AccountKind, categoryId: string) => {
+    updateAccountStore(account, (store) => {
+      if (store.categories.length <= 1) {
+        return store
+      }
+
+      const remaining = store.categories.filter((category) => category.id !== categoryId)
+      const fallbackCategoryId = remaining.find((category) => category.id === 'other')?.id ?? remaining[0].id
+
+      return {
+        categories: remaining,
+        expenses: store.expenses.map((expense) =>
+          expense.categoryId === categoryId ? { ...expense, categoryId: fallbackCategoryId } : expense,
+        ),
+      }
+    })
+
+    if (categoryInput === categoryId) {
+      const nextStore = account === 'personal' ? personal : business
+      const fallback = nextStore.categories.find((category) => category.id !== categoryId)?.id
+      if (fallback) {
+        setCategoryInput(fallback)
+      }
+    }
+  }
+
+  const renderDashboardPage = (account: AccountKind, title: string, store: DashboardStore, metrics: DashboardMetrics) => (
+    <section className="dashboard page" key={account}>
       <h1>{title}</h1>
       <p className="subtitle">Track month-to-date spending by category.</p>
 
       <div className="donut-wrap">
-        <div className="donut" style={{ background: donutBackground(metrics.totalsByCategory) }} aria-label="Category spending chart">
+        <div className="donut" style={{ background: donutBackground(store.categories, metrics.totalsByCategory) }} aria-label="Category spending chart">
           <div className="donut-center">
             <span>Total</span>
-            <strong>{formatCents(metrics.monthlyTotalCents)}</strong>
+            <strong>{formatCents(metrics.monthlyTotalCents, settings.currencySymbol)}</strong>
           </div>
         </div>
         <ul className="legend">
-          {CATEGORIES.map((category) => (
-            <li key={category}>
-              <span className="dot" style={{ backgroundColor: CATEGORY_COLORS[category] }} />
-              <span>{category}</span>
-              <strong>{formatCents(metrics.totalsByCategory[category])}</strong>
+          {store.categories.map((category) => (
+            <li key={category.id}>
+              <span className="dot" style={{ backgroundColor: category.color }} />
+              <span>{category.name}</span>
+              <strong>{formatCents(metrics.totalsByCategory[category.id] ?? 0, settings.currencySymbol)}</strong>
             </li>
           ))}
         </ul>
@@ -341,17 +623,28 @@ function App() {
           <p className="empty">No expenses yet. Tap + to add one.</p>
         ) : (
           <ul>
-            {metrics.recentTransactions.map((expense) => (
-              <li key={expense.id}>
-                <div>
-                  <p className="label">{expense.note}</p>
-                  <p className="meta">
-                    {expense.category} • {dateLabel.format(new Date(expense.createdAt))}
-                  </p>
-                </div>
-                <strong className="expense-outflow">-{formatCents(expense.amountCents)}</strong>
-              </li>
-            ))}
+            {metrics.recentTransactions.map((expense) => {
+              const categoryName = store.categories.find((category) => category.id === expense.categoryId)?.name ?? 'Other'
+              return (
+                <li
+                  key={expense.id}
+                  onTouchStart={() => startLongPress(() => setTransactionActionId(expense.id))}
+                  onTouchEnd={clearLongPress}
+                  onTouchCancel={clearLongPress}
+                  onMouseDown={() => startLongPress(() => setTransactionActionId(expense.id))}
+                  onMouseUp={clearLongPress}
+                  onMouseLeave={clearLongPress}
+                >
+                  <div>
+                    <p className="label">{expense.note}</p>
+                    <p className="meta">
+                      {categoryName} • {dateLabel.format(new Date(expense.createdAt))}
+                    </p>
+                  </div>
+                  <strong className="expense-outflow">-{formatCents(expense.amountCents, settings.currencySymbol)}</strong>
+                </li>
+              )
+            })}
           </ul>
         )}
       </section>
@@ -374,14 +667,14 @@ function App() {
         ))}
       </header>
 
-      <div className="page-viewport" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
-        <div className="page-track" style={{ transform: `translate3d(-${trackTranslatePercent}%, 0, 0)` }}>
-          {renderDashboardPage('Personal Dashboard', personalMetrics)}
-          {renderDashboardPage('Business Dashboard', businessMetrics)}
+      <div className="page-viewport" style={pageViewportStyle} onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
+        <div className="page-track" style={pageTrackStyle}>
+          {renderDashboardPage('personal', 'Personal Dashboard', personal, personalMetrics)}
+          {renderDashboardPage('business', 'Business Dashboard', business, businessMetrics)}
 
           <section className="notes-page page">
             <h1>Money Notes</h1>
-            <p className="subtitle">Quick thoughts, reminders, and budgeting ideas.</p>
+            <p className="subtitle">Tap and hold a note for edit/delete actions.</p>
             <form className="note-form" onSubmit={addNote}>
               <textarea
                 value={moneyNoteInput}
@@ -395,23 +688,109 @@ function App() {
               {notes.length === 0 ? (
                 <li className="empty">No notes yet. Add one above.</li>
               ) : (
-                notes.map((note, index) => <li key={`${note}-${index}`}>{note}</li>)
+                notes.map((note, index) => (
+                  <li
+                    key={`${note}-${index}`}
+                    onTouchStart={() => startLongPress(() => setNoteActionIndex(index))}
+                    onTouchEnd={clearLongPress}
+                    onTouchCancel={clearLongPress}
+                    onMouseDown={() => startLongPress(() => setNoteActionIndex(index))}
+                    onMouseUp={clearLongPress}
+                    onMouseLeave={clearLongPress}
+                  >
+                    {note}
+                  </li>
+                ))
               )}
             </ul>
+          </section>
+
+          <section className="settings-page page">
+            <h1>Settings</h1>
+            <p className="subtitle">Customize categories and currency preferences.</p>
+
+            <section className="settings-card">
+              <h2>Currency Symbol</h2>
+              <div className="chip-row">
+                {(['€', '$'] as CurrencySymbol[]).map((symbol) => (
+                  <button
+                    key={symbol}
+                    type="button"
+                    className={settings.currencySymbol === symbol ? 'chip active' : 'chip'}
+                    onClick={() => saveSettings({ currencySymbol: symbol })}
+                  >
+                    {symbol}
+                  </button>
+                ))}
+              </div>
+            </section>
+
+            <section className="settings-card">
+              <h2>Category Management</h2>
+              <div className="chip-row account-switch">
+                {(['personal', 'business'] as AccountKind[]).map((account) => (
+                  <button
+                    key={account}
+                    type="button"
+                    className={settingsAccount === account ? 'chip active' : 'chip'}
+                    onClick={() => setSettingsAccount(account)}
+                  >
+                    {account === 'personal' ? 'Personal' : 'Business'}
+                  </button>
+                ))}
+              </div>
+
+              <ul className="category-list">
+                {manageCategoriesStore.categories.map((category) => (
+                  <li key={category.id}>
+                    <input
+                      type="color"
+                      aria-label={`Color for ${category.name}`}
+                      value={category.color}
+                      onChange={(event) => updateCategory(settingsAccount, category.id, { color: event.target.value })}
+                    />
+                    <input
+                      type="text"
+                      value={category.name}
+                      onChange={(event) => updateCategory(settingsAccount, category.id, { name: event.target.value })}
+                    />
+                    <button type="button" className="danger-button" onClick={() => removeCategory(settingsAccount, category.id)}>
+                      Remove
+                    </button>
+                  </li>
+                ))}
+              </ul>
+
+              <form className="inline-form" onSubmit={addCategory}>
+                <input
+                  type="text"
+                  placeholder="New category"
+                  value={newCategoryName}
+                  onChange={(event) => setNewCategoryName(event.target.value)}
+                />
+                <input
+                  type="color"
+                  value={newCategoryColor}
+                  onChange={(event) => setNewCategoryColor(event.target.value)}
+                  aria-label="New category color"
+                />
+                <button type="submit">Add</button>
+              </form>
+            </section>
           </section>
         </div>
       </div>
 
-      {activeTab !== 'notes' ? (
-        <button className="fab" onClick={() => setShowAdd(true)} aria-label="Add expense">
+      {(activeTab === 'personal' || activeTab === 'business') && !showExpenseEditor ? (
+        <button className="fab" onClick={openAddExpense} aria-label="Add expense">
           +
         </button>
       ) : null}
 
-      {showAdd ? (
-        <div className="modal-backdrop" onClick={() => setShowAdd(false)}>
-          <form className="expense-form" onSubmit={addExpense} onClick={(event) => event.stopPropagation()}>
-            <h3>Add Expense</h3>
+      {showExpenseEditor ? (
+        <div className="modal-backdrop" onClick={() => setShowExpenseEditor(false)}>
+          <form className="expense-form" onSubmit={submitExpense} onClick={(event) => event.stopPropagation()}>
+            <h3>{expenseEditId ? 'Edit Expense' : 'Add Expense'}</h3>
             <label>
               Amount
               <input
@@ -431,10 +810,10 @@ function App() {
             </label>
             <label>
               Category
-              <select value={categoryInput} onChange={(event) => setCategoryInput(event.target.value as Category)}>
-                {CATEGORIES.map((category) => (
-                  <option key={category} value={category}>
-                    {category}
+              <select value={categoryInput} onChange={(event) => setCategoryInput(event.target.value)}>
+                {activeDashboardStore.categories.map((category) => (
+                  <option key={category.id} value={category.id}>
+                    {category.name}
                   </option>
                 ))}
               </select>
@@ -448,7 +827,66 @@ function App() {
                 onChange={(event) => setExpenseNoteInput(event.target.value)}
               />
             </label>
-            <button type="submit">Save Expense</button>
+            <button type="submit">{expenseEditId ? 'Save Changes' : 'Save Expense'}</button>
+          </form>
+        </div>
+      ) : null}
+
+      {transactionActionId ? (
+        <div className="action-sheet-backdrop" onClick={() => setTransactionActionId(null)}>
+          <div className="action-sheet" onClick={(event) => event.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => {
+                const target = activeDashboardStore.expenses.find((expense) => expense.id === transactionActionId)
+                if (target) {
+                  openEditExpense(target)
+                }
+              }}
+            >
+              Edit Transaction
+            </button>
+            <button type="button" className="danger-button" onClick={() => deleteExpense(transactionActionId)}>
+              Delete Transaction
+            </button>
+            <button type="button" onClick={() => setTransactionActionId(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {noteActionIndex !== null && !showNoteEditor ? (
+        <div className="action-sheet-backdrop" onClick={() => setNoteActionIndex(null)}>
+          <div className="action-sheet" onClick={(event) => event.stopPropagation()}>
+            <button
+              type="button"
+              onClick={() => {
+                setNoteDraft(notes[noteActionIndex] ?? '')
+                setShowNoteEditor(true)
+              }}
+            >
+              Edit Note
+            </button>
+            <button type="button" className="danger-button" onClick={() => deleteNote(noteActionIndex)}>
+              Delete Note
+            </button>
+            <button type="button" onClick={() => setNoteActionIndex(null)}>
+              Cancel
+            </button>
+          </div>
+        </div>
+      ) : null}
+
+      {showNoteEditor ? (
+        <div className="modal-backdrop" onClick={() => setShowNoteEditor(false)}>
+          <form className="expense-form" onSubmit={saveEditedNote} onClick={(event) => event.stopPropagation()}>
+            <h3>Edit Note</h3>
+            <label>
+              Note
+              <textarea value={noteDraft} rows={4} onChange={(event) => setNoteDraft(event.target.value)} required />
+            </label>
+            <button type="submit">Save Note</button>
           </form>
         </div>
       ) : null}
