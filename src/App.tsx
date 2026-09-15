@@ -1,7 +1,7 @@
 import { useMemo, useRef, useState } from 'react'
 import type { CSSProperties, FormEvent, TouchEvent } from 'react'
 
-type TabId = 'personal' | 'business' | 'notes' | 'settings'
+type TabId = 'personal' | 'business' | 'stats' | 'notes' | 'settings'
 type AccountKind = 'personal' | 'business'
 type CurrencySymbol = '€' | '$'
 
@@ -34,6 +34,16 @@ type AppSettings = {
   currencySymbol: CurrencySymbol
 }
 
+type StatsDayPoint = {
+  label: string
+  amountCents: number
+}
+
+type StatsMonthPoint = {
+  label: string
+  amountCents: number
+}
+
 const STORAGE_KEYS = {
   personal: 'money.pwa.personal.v2',
   business: 'money.pwa.business.v2',
@@ -50,11 +60,12 @@ const DEFAULT_CATEGORIES: CategoryItem[] = [
   { id: 'other', name: 'Other', color: '#8493ab' },
 ]
 
-const TABS: TabId[] = ['personal', 'business', 'notes', 'settings']
+const TABS: TabId[] = ['personal', 'business', 'stats', 'notes', 'settings']
 
 const TAB_LABELS: Record<TabId, string> = {
   personal: 'Personal',
   business: 'Business',
+  stats: 'Stats',
   notes: 'Notes',
   settings: 'Settings',
 }
@@ -68,7 +79,22 @@ const dateLabel = new Intl.DateTimeFormat('en-US', {
   day: 'numeric',
 })
 
+const dayLabel = new Intl.DateTimeFormat('en-US', {
+  weekday: 'short',
+})
+
+const monthLabel = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+})
+
 const monthKey = (date = new Date()) => `${date.getFullYear()}-${date.getMonth()}`
+
+const dayKey = (date = new Date()) => {
+  const year = date.getFullYear()
+  const month = `${date.getMonth() + 1}`.padStart(2, '0')
+  const day = `${date.getDate()}`.padStart(2, '0')
+  return `${year}-${month}-${day}`
+}
 
 const safeRead = <T,>(key: string, fallback: T): T => {
   try {
@@ -114,7 +140,6 @@ const parseCurrencyInputToCents = (value: string): number | null => {
 
   const [whole, fractional = ''] = normalized.split('.')
   const cents = Number(whole) * 100 + Number((fractional + '00').slice(0, 2))
-
   if (!Number.isFinite(cents) || cents <= 0) {
     return null
   }
@@ -288,6 +313,65 @@ const donutBackground = (categories: CategoryItem[], totals: Record<string, numb
   return `conic-gradient(${stops.join(', ')})`
 }
 
+const summarizeComparison = (current: number, previous: number, symbol: CurrencySymbol, periodLabel: string) => {
+  if (current === 0 && previous === 0) {
+    return `You spent ${formatCents(0, symbol)} ${periodLabel} and the period before.`
+  }
+
+  if (previous === 0) {
+    return `You spent ${formatCents(current, symbol)} ${periodLabel}, up from ${formatCents(0, symbol)} before.`
+  }
+
+  const ratio = ((current - previous) / previous) * 100
+  const percent = Math.abs(ratio).toFixed(0)
+  const direction = ratio <= 0 ? 'less' : 'more'
+  return `You spent ${percent}% ${direction} ${periodLabel}.`
+}
+
+const buildStatsSeries = (expenses: Expense[]) => {
+  const byDay: Record<string, number> = {}
+  for (const expense of expenses) {
+    const key = dayKey(new Date(expense.createdAt))
+    byDay[key] = (byDay[key] ?? 0) + expense.amountCents
+  }
+
+  const today = new Date()
+  const daily: StatsDayPoint[] = []
+  for (let i = 6; i >= 0; i -= 1) {
+    const d = new Date(today)
+    d.setDate(today.getDate() - i)
+    daily.push({ label: dayLabel.format(d), amountCents: byDay[dayKey(d)] ?? 0 })
+  }
+
+  const todaySpend = daily[daily.length - 1]?.amountCents ?? 0
+  const yesterdaySpend = daily[daily.length - 2]?.amountCents ?? 0
+
+  const monthly: StatsMonthPoint[] = []
+  for (let i = 5; i >= 0; i -= 1) {
+    const d = new Date(today.getFullYear(), today.getMonth() - i, 1)
+    const key = monthKey(d)
+    let total = 0
+    for (const expense of expenses) {
+      if (monthKey(new Date(expense.createdAt)) === key) {
+        total += expense.amountCents
+      }
+    }
+    monthly.push({ label: monthLabel.format(d), amountCents: total })
+  }
+
+  const thisMonthSpend = monthly[monthly.length - 1]?.amountCents ?? 0
+  const prevMonthSpend = monthly[monthly.length - 2]?.amountCents ?? 0
+
+  return {
+    daily,
+    monthly,
+    todaySpend,
+    yesterdaySpend,
+    thisMonthSpend,
+    prevMonthSpend,
+  }
+}
+
 function App() {
   const [activeTab, setActiveTab] = useState<TabId>('personal')
   const [personal, setPersonal] = useState<DashboardStore>(() => ensureStore(STORAGE_KEYS.personal, seedData('personal')))
@@ -311,12 +395,14 @@ function App() {
   const [settingsAccount, setSettingsAccount] = useState<AccountKind>('personal')
   const [newCategoryName, setNewCategoryName] = useState('')
   const [newCategoryColor, setNewCategoryColor] = useState('#6a87ff')
+  const [confirmClearOpen, setConfirmClearOpen] = useState(false)
 
   const touchStartRef = useRef<{ x: number; y: number } | null>(null)
   const longPressTimerRef = useRef<number | null>(null)
 
   const personalMetrics = useMemo(() => buildDashboardMetrics(personal), [personal])
   const businessMetrics = useMemo(() => buildDashboardMetrics(business), [business])
+  const statsSeries = useMemo(() => buildStatsSeries(personal.expenses), [personal.expenses])
 
   const activeTabIndex = Math.max(0, TABS.indexOf(activeTab))
   const trackTranslatePercent = (activeTabIndex * 100) / TABS.length
@@ -353,6 +439,7 @@ function App() {
     setShowExpenseEditor(false)
     setTransactionActionId(null)
     setNoteActionIndex(null)
+    setConfirmClearOpen(false)
   }
 
   const openAddExpense = () => {
@@ -480,6 +567,17 @@ function App() {
     setNoteActionIndex(null)
   }
 
+  const clearSpendingData = () => {
+    const nextPersonal = { ...personal, expenses: [] }
+    const nextBusiness = { ...business, expenses: [] }
+
+    setPersonal(nextPersonal)
+    setBusiness(nextBusiness)
+    save(STORAGE_KEYS.personal, nextPersonal)
+    save(STORAGE_KEYS.business, nextBusiness)
+    setConfirmClearOpen(false)
+  }
+
   const startLongPress = (callback: () => void) => {
     if (longPressTimerRef.current !== null) {
       window.clearTimeout(longPressTimerRef.current)
@@ -510,7 +608,7 @@ function App() {
   }
 
   const onTouchEnd = (event: TouchEvent<HTMLElement>) => {
-    if (showExpenseEditor || showNoteEditor || !touchStartRef.current) {
+    if (showExpenseEditor || showNoteEditor || confirmClearOpen || !touchStartRef.current) {
       return
     }
 
@@ -651,6 +749,16 @@ function App() {
     </section>
   )
 
+  const maxDaily = Math.max(...statsSeries.daily.map((item) => item.amountCents), 1)
+  const maxMonthly = Math.max(...statsSeries.monthly.map((item) => item.amountCents), 1)
+  const dailyPoints = statsSeries.daily
+    .map((point, index) => {
+      const x = (index / Math.max(statsSeries.daily.length - 1, 1)) * 100
+      const y = 100 - (point.amountCents / maxDaily) * 100
+      return `${x},${y}`
+    })
+    .join(' ')
+
   return (
     <main className="app-shell">
       <header className="top-nav" role="tablist" aria-label="Account views">
@@ -671,6 +779,51 @@ function App() {
         <div className="page-track" style={pageTrackStyle}>
           {renderDashboardPage('personal', 'Personal Dashboard', personal, personalMetrics)}
           {renderDashboardPage('business', 'Business Dashboard', business, businessMetrics)}
+
+          <section className="stats-page page">
+            <h1>Personal Stats</h1>
+            <p className="subtitle">
+              {summarizeComparison(statsSeries.todaySpend, statsSeries.yesterdaySpend, settings.currencySymbol, 'today compared to yesterday')}
+            </p>
+
+            <section className="settings-card chart-card">
+              <h2>Daily Spending (7 days)</h2>
+              {personal.expenses.length === 0 ? (
+                <p className="empty">No personal expenses yet. Add one to see trend lines.</p>
+              ) : (
+                <>
+                  <svg viewBox="0 0 100 100" className="line-chart" aria-label="Daily spending chart">
+                    <polyline points={dailyPoints} />
+                  </svg>
+                  <div className="axis-labels">
+                    {statsSeries.daily.map((point) => (
+                      <span key={point.label}>{point.label}</span>
+                    ))}
+                  </div>
+                </>
+              )}
+            </section>
+
+            <section className="settings-card chart-card">
+              <h2>Monthly Spending</h2>
+              <p className="subtitle">
+                {summarizeComparison(
+                  statsSeries.thisMonthSpend,
+                  statsSeries.prevMonthSpend,
+                  settings.currencySymbol,
+                  'this month compared to last month',
+                )}
+              </p>
+              <div className="month-bars" role="img" aria-label="Monthly spending bars">
+                {statsSeries.monthly.map((point) => (
+                  <div key={point.label} className="month-bar-wrap">
+                    <div className="month-bar" style={{ height: `${Math.max((point.amountCents / maxMonthly) * 96, 8)}px` }} />
+                    <span>{point.label}</span>
+                  </div>
+                ))}
+              </div>
+            </section>
+          </section>
 
           <section className="notes-page page">
             <h1>Money Notes</h1>
@@ -776,6 +929,14 @@ function App() {
                 />
                 <button type="submit">Add</button>
               </form>
+            </section>
+
+            <section className="settings-card danger-card">
+              <h2>Danger Zone</h2>
+              <p className="subtitle">This clears Personal and Business spending only. Notes, categories, and settings stay.</p>
+              <button type="button" className="danger-button wide" onClick={() => setConfirmClearOpen(true)}>
+                Clear all data
+              </button>
             </section>
           </section>
         </div>
@@ -888,6 +1049,21 @@ function App() {
             </label>
             <button type="submit">Save Note</button>
           </form>
+        </div>
+      ) : null}
+
+      {confirmClearOpen ? (
+        <div className="action-sheet-backdrop" onClick={() => setConfirmClearOpen(false)}>
+          <div className="action-sheet" onClick={(event) => event.stopPropagation()}>
+            <h3>Clear spending data?</h3>
+            <p className="subtitle">This removes all Personal and Business expenses only.</p>
+            <button type="button" className="danger-button" onClick={clearSpendingData}>
+              Yes, clear spending data
+            </button>
+            <button type="button" onClick={() => setConfirmClearOpen(false)}>
+              Cancel
+            </button>
+          </div>
         </div>
       ) : null}
     </main>
