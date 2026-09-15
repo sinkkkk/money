@@ -238,6 +238,11 @@ h2 {
   color: #9aa4ad;
 }
 
+.field-error {
+  color: #f85149;
+  font-size: 0.78rem;
+}
+
 .expense-form input,
 .expense-form select,
 .note-form textarea {

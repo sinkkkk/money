@@ -1,12 +1,12 @@
-import { useMemo, useState } from 'react'
-import type { FormEvent } from 'react'
+import { useMemo, useRef, useState } from 'react'
+import type { FormEvent, TouchEvent } from 'react'
 
 type TabId = 'personal' | 'business' | 'notes'
 type Category = 'Food' | 'Transport' | 'Shopping' | 'Bills' | 'Health' | 'Other'
 
 type Expense = {
   id: string
-  amount: number
+  amountCents: number
   category: Category
   note: string
   createdAt: string
@@ -23,6 +23,7 @@ const STORAGE_KEYS = {
 } as const
 
 const CATEGORIES: Category[] = ['Food', 'Transport', 'Shopping', 'Bills', 'Health', 'Other']
+const TABS: TabId[] = ['personal', 'business', 'notes']
 const CATEGORY_COLORS: Record<Category, string> = {
   Food: '#34d399',
   Transport: '#60a5fa',
@@ -35,7 +36,8 @@ const CATEGORY_COLORS: Record<Category, string> = {
 const currency = new Intl.NumberFormat('en-US', {
   style: 'currency',
   currency: 'USD',
-  maximumFractionDigits: 0,
+  minimumFractionDigits: 2,
+  maximumFractionDigits: 2,
 })
 
 const dateLabel = new Intl.DateTimeFormat('en-US', {
@@ -57,18 +59,46 @@ const safeRead = <T,>(key: string, fallback: T): T => {
   }
 }
 
+const formatCents = (cents: number) => currency.format(cents / 100)
+
+const dollarsToCents = (amount: number) => Math.round(amount * 100)
+
+const parseCurrencyInputToCents = (value: string): number | null => {
+  const compact = value.trim().replaceAll(' ', '')
+  if (!compact) {
+    return null
+  }
+
+  if (compact.includes('.') && compact.includes(',')) {
+    return null
+  }
+
+  const normalized = compact.replace(',', '.')
+  if (!/^\d+(\.\d{1,2})?$/.test(normalized)) {
+    return null
+  }
+
+  const [whole, fractional = ''] = normalized.split('.')
+  const cents = Number(whole) * 100 + Number((fractional + '00').slice(0, 2))
+  if (!Number.isFinite(cents) || cents <= 0) {
+    return null
+  }
+
+  return cents
+}
+
 const save = (key: string, value: unknown) => {
   localStorage.setItem(key, JSON.stringify(value))
 }
 
 const seedData = (kind: 'personal' | 'business'): DashboardStore => {
   const now = new Date()
-  const make = (daysAgo: number, amount: number, category: Category, note: string): Expense => {
+  const make = (daysAgo: number, amountCents: number, category: Category, note: string): Expense => {
     const d = new Date(now)
     d.setDate(now.getDate() - daysAgo)
     return {
       id: `${kind}-${d.getTime()}-${category}`,
-      amount,
+      amountCents,
       category,
       note,
       createdAt: d.toISOString(),
@@ -79,14 +109,14 @@ const seedData = (kind: 'personal' | 'business'): DashboardStore => {
     expenses:
       kind === 'personal'
         ? [
-            make(1, 24, 'Food', 'Lunch'),
-            make(2, 18, 'Transport', 'Rideshare'),
-            make(5, 61, 'Shopping', 'Groceries'),
+            make(1, dollarsToCents(24), 'Food', 'Lunch'),
+            make(2, dollarsToCents(18), 'Transport', 'Rideshare'),
+            make(5, dollarsToCents(61), 'Shopping', 'Groceries'),
           ]
         : [
-            make(0, 145, 'Bills', 'Workspace software'),
-            make(3, 72, 'Transport', 'Client visit train'),
-            make(8, 34, 'Food', 'Team coffee'),
+            make(0, dollarsToCents(145), 'Bills', 'Workspace software'),
+            make(3, dollarsToCents(72), 'Transport', 'Client visit train'),
+            make(8, dollarsToCents(34), 'Food', 'Team coffee'),
           ],
   }
 }
@@ -97,7 +127,21 @@ const ensureStore = (key: string, fallback: DashboardStore) => {
     save(key, fallback)
     return fallback
   }
-  return existing
+  const normalized: DashboardStore = {
+    expenses: existing.expenses.map((expense) => {
+      if (typeof expense.amountCents === 'number') {
+        return expense
+      }
+
+      const legacyAmount = (expense as Expense & { amount?: number }).amount
+      return {
+        ...expense,
+        amountCents: dollarsToCents(Number.isFinite(legacyAmount) ? legacyAmount ?? 0 : 0),
+      }
+    }),
+  }
+  save(key, normalized)
+  return normalized
 }
 
 const donutBackground = (totals: Record<Category, number>) => {
@@ -130,8 +174,10 @@ function App() {
 
   const [showAdd, setShowAdd] = useState(false)
   const [amountInput, setAmountInput] = useState('')
+  const [amountError, setAmountError] = useState('')
   const [categoryInput, setCategoryInput] = useState<Category>('Food')
   const [noteInput, setNoteInput] = useState('')
+  const touchStartRef = useRef<{ x: number; y: number } | null>(null)
 
   const activeStore = activeTab === 'personal' ? personal : business
   const setActiveStore = activeTab === 'personal' ? setPersonal : setBusiness
@@ -143,7 +189,7 @@ function App() {
 
     for (const expense of activeStore.expenses) {
       if (monthKey(new Date(expense.createdAt)) === thisMonth) {
-        baseline[expense.category] += expense.amount
+        baseline[expense.category] += expense.amountCents
       }
     }
 
@@ -159,14 +205,15 @@ function App() {
 
   const addExpense = (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault()
-    const amount = Number(amountInput)
-    if (!Number.isFinite(amount) || amount <= 0) {
+    const amountCents = parseCurrencyInputToCents(amountInput)
+    if (!amountCents) {
+      setAmountError('Enter a valid amount, like 3.99 or 3,99.')
       return
     }
 
     const nextExpense: Expense = {
       id: `${activeTab}-${Date.now()}`,
-      amount,
+      amountCents,
       category: categoryInput,
       note: noteInput.trim() || 'Expense',
       createdAt: new Date().toISOString(),
@@ -180,9 +227,42 @@ function App() {
     save(activeStorageKey, nextStore)
 
     setAmountInput('')
+    setAmountError('')
     setCategoryInput('Food')
     setNoteInput('')
     setShowAdd(false)
+  }
+
+  const onTouchStart = (event: TouchEvent<HTMLElement>) => {
+    const target = event.target as HTMLElement
+    if (target.closest('input, textarea, select, button, label, form')) {
+      touchStartRef.current = null
+      return
+    }
+
+    const touch = event.changedTouches[0]
+    touchStartRef.current = { x: touch.clientX, y: touch.clientY }
+  }
+
+  const onTouchEnd = (event: TouchEvent<HTMLElement>) => {
+    if (showAdd || !touchStartRef.current) {
+      return
+    }
+    const touch = event.changedTouches[0]
+    const deltaX = touch.clientX - touchStartRef.current.x
+    const deltaY = touch.clientY - touchStartRef.current.y
+    touchStartRef.current = null
+
+    if (Math.abs(deltaX) < 48 || Math.abs(deltaX) < Math.abs(deltaY) * 1.2) {
+      return
+    }
+
+    const currentIndex = TABS.indexOf(activeTab)
+    if (deltaX < 0 && currentIndex < TABS.length - 1) {
+      setActiveTab(TABS[currentIndex + 1])
+    } else if (deltaX > 0 && currentIndex > 0) {
+      setActiveTab(TABS[currentIndex - 1])
+    }
   }
 
   const addNote = (event: FormEvent<HTMLFormElement>) => {
@@ -201,7 +281,7 @@ function App() {
   }
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" onTouchStart={onTouchStart} onTouchEnd={onTouchEnd}>
       <header className="top-nav" role="tablist" aria-label="Account views">
         <button
           className={activeTab === 'personal' ? 'tab active' : 'tab'}
@@ -259,7 +339,7 @@ function App() {
             <div className="donut" style={{ background: donutBackground(monthTotals) }} aria-label="Category spending chart">
               <div className="donut-center">
                 <span>Total</span>
-                <strong>{currency.format(monthlyTotal)}</strong>
+                <strong>{formatCents(monthlyTotal)}</strong>
               </div>
             </div>
             <ul className="legend">
@@ -267,7 +347,7 @@ function App() {
                 <li key={category}>
                   <span className="dot" style={{ backgroundColor: CATEGORY_COLORS[category] }} />
                   <span>{category}</span>
-                  <strong>{currency.format(monthTotals[category])}</strong>
+                  <strong>{formatCents(monthTotals[category])}</strong>
                 </li>
               ))}
             </ul>
@@ -287,7 +367,7 @@ function App() {
                         {expense.category} • {dateLabel.format(new Date(expense.createdAt))}
                       </p>
                     </div>
-                    <strong>-{currency.format(expense.amount)}</strong>
+                    <strong>-{formatCents(expense.amountCents)}</strong>
                   </li>
                 ))}
               </ul>
@@ -309,15 +389,19 @@ function App() {
                 <label>
                   Amount
                   <input
-                    type="number"
+                    type="text"
                     inputMode="decimal"
-                    min="0"
-                    step="0.01"
-                    placeholder="45"
+                    placeholder="45.00 or 45,00"
                     value={amountInput}
-                    onChange={(event) => setAmountInput(event.target.value)}
+                    onChange={(event) => {
+                      setAmountInput(event.target.value)
+                      if (amountError) {
+                        setAmountError('')
+                      }
+                    }}
                     required
                   />
+                  {amountError ? <small className="field-error">{amountError}</small> : null}
                 </label>
                 <label>
                   Category
